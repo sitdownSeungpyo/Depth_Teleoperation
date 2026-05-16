@@ -1,0 +1,53 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "imitation_upper"
+version = "0.1.0"
+description = "Real-time upper-body imitation controller (Yi et al. 2012, RealSense D435i)"
+requires-python = ">=3.11,<3.12"
+dependencies = [
+  "pyrealsense2>=2.55,<3",
+  "mediapipe>=0.10,<0.11",
+  "opencv-python>=4.9",
+  "numpy>=1.26",
+  "scipy>=1.11",
+  "pyyaml>=6.0",
+  "pynput>=1.7",
+  "pybullet>=3.2.6",        # sim publisher + URDF visualization
+  "dynamixel-sdk>=3.7",     # UART/RS485 direct servo control (UBP)
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=7.4",
+  "pytest-asyncio>=0.23",
+  "ruff>=0.4",
+  "mypy>=1.8",
+]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["core*", "tracker*", "publisher*", "app*"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP", "PTH"]
+ignore = ["E501"]
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+files = ["core"]
+
+[[tool.mypy.overrides]]
+module = ["pyrealsense2.*", "mediapipe.*", "cv2.*", "pynput.*", "scipy.*", "yaml.*", "pybullet.*", "dynamixel_sdk.*"]
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"

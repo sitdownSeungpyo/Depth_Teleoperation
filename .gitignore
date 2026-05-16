@@ -1,0 +1,16 @@
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+build/
+dist/
+*.log
+recordings/
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+.vscode/
+.idea/
+# MediaPipe .task models (5–30 MB each, fetched by scripts/download_mediapipe_model.ps1)
+models/*.task
