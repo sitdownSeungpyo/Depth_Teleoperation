@@ -1,0 +1,78 @@
+﻿tracker:
+  type: realsense          # or: mock
+  realsense:
+    color_resolution: [640, 480]
+    depth_resolution: [640, 480]
+    fps: 30
+    align_to: color
+    enable_imu: false
+    depth_max_m: 4.0
+    model_asset_path: ./models/pose_landmarker_lite.task   # download via scripts/download_mediapipe_model.ps1
+  pose:
+    model: mediapipe_pose_lite
+    min_visibility: 0.1
+  mock:
+    jsonl_path: null
+    loop: true
+
+retarget:
+  robot:
+    # PLACEHOLDER VALUES - REPLACE WITH YOUR ROBOT'S MEASUREMENTS
+    upper_arm_length: 0.060
+    lower_arm_length: 0.129
+    shoulder_offset: [0.0, 0.072, 0.090]
+  operator_calibration: t_pose_hold
+  fixed_arm_length: 0.55
+  calibration_frames: 30
+
+filter:
+  one_euro:
+    min_cutoff: 1.0
+    beta: 0.05
+    d_cutoff: 1.0
+  joint_limits_factor: 0.9
+  max_velocity_rad_s: 6.0
+  velocity_violation_factor: 50.0
+  mechanical_limits:
+    r_shoulder_pitch: [-3.14, 3.14]
+    r_shoulder_roll:  [-1.57, 3.14]
+    r_elbow:          [0.0, 2.79]
+    l_shoulder_pitch: [-3.14, 3.14]
+    l_shoulder_roll:  [-1.57, 3.14]
+    l_elbow:          [0.0, 2.79]
+    torso_yaw:        [-1.57, 1.57]
+    head_pitch:       [-1.0, 1.0]
+
+publisher:
+  type: mock                # phase 1: mock; phase 3: udp/ros2 (TBD)
+  rate_hz: 100
+  log_path: null
+  udp:
+    host: 192.168.10.2
+    port: 9000
+
+safety:
+  deadman:
+    type: keyboard
+    key: space
+  estop_key: esc
+  confidence_threshold: 0.5
+  loss_grace_period_s: 0.5
+  ramp_to_safe_s: 1.5
+  watchdog_factor: 3
+  safe_pose:
+    r_shoulder_pitch: 1.4
+    r_shoulder_roll: 0.1
+    r_elbow: 0.2
+    l_shoulder_pitch: 1.4
+    l_shoulder_roll: 0.1
+    l_elbow: 0.2
+    torso_yaw: 0.0
+    head_pitch: 0.0
+
+main:
+  loop_rate_hz: 60
+  latency_log_every: 30
+  latency_p95_budget_s: 0.1
+
+

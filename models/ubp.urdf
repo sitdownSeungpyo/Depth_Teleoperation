@@ -1,0 +1,444 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+    UBP (Upper Body Platform) — PYO 자체 제작 로봇
+    Phase 1+ URDF, 2026-05-15 revision.
+
+    Joint topology per arm (6 DOF, total arm length 555 mm):
+      shoulder_pitch  (Y)  ─┐
+      shoulder_roll   (X)   │ 어깨 3-DOF 짐벌 (link length 없이 연속)
+      shoulder_yaw    (Z)  ─┘
+      └ upper_arm_link  (250 mm 길이)
+        elbow_pitch   (Y)  ┐
+        wrist_yaw     (Z)  │ elbow 와 wrist_yaw 동일 위치 (forearm twist)
+        └ forearm_link  (250 mm 길이)
+          wrist_pitch (Y)
+          └ hand_link  (55 mm)
+
+    Head: neck_yaw (Z) → head_pitch (Y)
+    Torso: 고정 (no torso_yaw). base_link 자체가 토르소.
+
+    Dynamixel 매핑:
+      shoulder pitch / roll: MX-64
+      shoulder yaw:          MX-28
+      elbow / wrist_yaw / neck_yaw / head_pitch: MX-28
+      wrist_pitch:           XL430
+
+    Dimensions (placeholder, replace with measurements):
+      TORSO_BOX          = 0.13 × 0.20 × 0.60 m (depth × width × height)
+      SHOULDER_HALF_W    = 0.18  (어깨 사이 거리의 절반)
+      UPPER_ARM_LENGTH   = 0.25
+      FOREARM_LENGTH     = 0.25
+      HAND_LENGTH        = 0.055
+      TOTAL ARM          = 0.555
+      HEAD_OFFSET_Z      = 0.10 (top of torso → head top)
+
+    Note: 2XL430 actuator (neck_yaw + head_pitch 같은 모터 1개로 2축 제어)
+          → Dynamixel config 에서 둘 다 model: 2XL430 로 마킹
+-->
+<robot name="ubp">
+
+  <!-- ===== Materials ===== -->
+  <material name="torso_color"><color rgba="0.4 0.4 0.4 1.0"/></material>
+  <material name="right_color"><color rgba="0.85 0.20 0.20 1.0"/></material>
+  <material name="left_color"><color rgba="0.20 0.30 0.85 1.0"/></material>
+  <material name="head_color"><color rgba="0.95 0.85 0.60 1.0"/></material>
+  <material name="hand_color"><color rgba="0.95 0.65 0.45 1.0"/></material>
+  <material name="joint_color"><color rgba="0.6 0.6 0.6 1.0"/></material>
+
+  <!-- ===== Torso (FIXED — 회전 안 함, base_link 자체가 토르소) ===== -->
+  <link name="base_link">
+    <visual>
+      <origin xyz="0 0 0.30" rpy="0 0 0"/>
+      <geometry>
+        <box size="0.13 0.20 0.60"/>
+      </geometry>
+      <material name="torso_color"/>
+    </visual>
+    <collision>
+      <origin xyz="0 0 0.30" rpy="0 0 0"/>
+      <geometry>
+        <box size="0.13 0.20 0.60"/>
+      </geometry>
+    </collision>
+    <inertial>
+      <origin xyz="0 0 0.30"/>
+      <mass value="3.0"/>
+      <inertia ixx="0.05" ixy="0" ixz="0" iyy="0.05" iyz="0" izz="0.05"/>
+    </inertial>
+  </link>
+
+  <!-- ===== Head / Neck ===== -->
+  <joint name="neck_yaw_joint" type="revolute">
+    <parent link="base_link"/>
+    <child link="neck_link"/>
+    <origin xyz="0 0 0.60" rpy="0 0 0"/>
+    <axis xyz="0 0 1"/>
+    <limit lower="-1.57" upper="1.57" effort="6.0" velocity="6.0"/>
+    <dynamics damping="0.1" friction="0.05"/>
+  </joint>
+
+  <link name="neck_link">
+    <visual>
+      <origin xyz="0 0 0.025" rpy="0 0 0"/>
+      <geometry>
+        <cylinder radius="0.025" length="0.05"/>
+      </geometry>
+      <material name="torso_color"/>
+    </visual>
+    <inertial>
+      <origin xyz="0 0 0.025"/>
+      <mass value="0.05"/>
+      <inertia ixx="0.0001" ixy="0" ixz="0" iyy="0.0001" iyz="0" izz="0.0001"/>
+    </inertial>
+  </link>
+
+  <joint name="head_pitch_joint" type="revolute">
+    <parent link="neck_link"/>
+    <child link="head_link"/>
+    <origin xyz="0 0 0.05" rpy="0 0 0"/>
+    <axis xyz="0 -1 0"/>  <!-- +pitch = chin tucks down (anatomical) -->
+    <limit lower="-1.0" upper="1.0" effort="6.0" velocity="6.0"/>
+    <dynamics damping="0.1" friction="0.05"/>
+  </joint>
+
+  <link name="head_link">
+    <visual>
+      <origin xyz="0 0 0.08" rpy="0 0 0"/>
+      <geometry>
+        <sphere radius="0.08"/>
+      </geometry>
+      <material name="head_color"/>
+    </visual>
+    <collision>
+      <origin xyz="0 0 0.08" rpy="0 0 0"/>
+      <geometry>
+        <sphere radius="0.08"/>
+      </geometry>
+    </collision>
+    <inertial>
+      <origin xyz="0 0 0.08"/>
+      <mass value="0.3"/>
+      <inertia ixx="0.001" ixy="0" ixz="0" iyy="0.001" iyz="0" izz="0.001"/>
+    </inertial>
+  </link>
+
+  <!-- ============================================================ -->
+  <!-- ===== Right Arm: 6 DOF (sh_p → sh_r → sh_y → elb → w_y → w_p)
+            sh_p/sh_r/sh_y 는 모두 어깨 같은 점에서 연속 회전 (link length 없음) -->
+  <!-- ============================================================ -->
+
+  <joint name="r_shoulder_pitch_joint" type="revolute">
+    <parent link="base_link"/>
+    <child link="r_shoulder_pr_link"/>
+    <origin xyz="0 -0.18 0.60" rpy="0 0 0"/>
+    <axis xyz="0 -1 0"/>  <!-- +pitch = arm forward (Yi 2012 / DARwIn-OP convention) -->
+    <limit lower="-3.14" upper="3.14" effort="6.0" velocity="6.0"/>
+    <dynamics damping="0.1" friction="0.05"/>
+  </joint>
+
+  <!-- sh_p 와 sh_r 사이의 중간 link — link 길이 0, sphere joint 시각화 -->
+  <link name="r_shoulder_pr_link">
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <sphere radius="0.035"/>
+      </geometry>
+      <material name="right_color"/>
+    </visual>
+    <inertial>
+      <mass value="0.05"/>
+      <inertia ixx="0.0001" ixy="0" ixz="0" iyy="0.0001" iyz="0" izz="0.0001"/>
+    </inertial>
+  </link>
+
+  <joint name="r_shoulder_roll_joint" type="revolute">
+    <parent link="r_shoulder_pr_link"/>
+    <child link="r_shoulder_ry_link"/>
+    <origin xyz="0 0 0" rpy="0 0 0"/>
+    <axis xyz="-1 0 0"/>  <!-- +roll = arm outward (right arm to -Y) -->
+    <limit lower="-3.14" upper="3.14" effort="6.0" velocity="6.0"/>
+    <dynamics damping="0.1" friction="0.05"/>
+  </joint>
+
+  <!-- sh_r 와 sh_y 사이의 중간 link — 길이 0 -->
+  <link name="r_shoulder_ry_link">
+    <inertial>
+      <mass value="0.03"/>
+      <inertia ixx="0.0001" ixy="0" ixz="0" iyy="0.0001" iyz="0" izz="0.0001"/>
+    </inertial>
+  </link>
+
+  <joint name="r_shoulder_yaw_joint" type="revolute">
+    <parent link="r_shoulder_ry_link"/>
+    <child link="r_upper_arm_link"/>
+    <origin xyz="0 0 0" rpy="0 0 0"/>
+    <axis xyz="0 0 1"/>
+    <limit lower="-3.14" upper="3.14" effort="6.0" velocity="6.0"/>
+    <dynamics damping="0.1" friction="0.05"/>
+  </joint>
+
+  <!-- Upper arm: 어깨 → 팔꿈치, 250 mm -->
+  <link name="r_upper_arm_link">
+    <visual>
+      <origin xyz="0 0 -0.125" rpy="0 0 0"/>
+      <geometry>
+        <cylinder radius="0.03" length="0.25"/>
+      </geometry>
+      <material name="right_color"/>
+    </visual>
+    <collision>
+      <origin xyz="0 0 -0.125" rpy="0 0 0"/>
+      <geometry>
+        <cylinder radius="0.03" length="0.25"/>
+      </geometry>
+    </collision>
+    <inertial>
+      <origin xyz="0 0 -0.125"/>
+      <mass value="0.20"/>
+      <inertia ixx="0.001" ixy="0" ixz="0" iyy="0.001" iyz="0" izz="0.0002"/>
+    </inertial>
+  </link>
+
+  <joint name="r_elbow_joint" type="revolute">
+    <parent link="r_upper_arm_link"/>
+    <child link="r_elbow_link"/>
+    <origin xyz="0 0 -0.25" rpy="0 0 0"/>
+    <axis xyz="0 1 0"/>  <!-- +elbow flex direction reversed per user feedback -->
+    <limit lower="0.0" upper="2.79" effort="6.0" velocity="6.0"/>
+    <dynamics damping="0.1" friction="0.05"/>
+  </joint>
+
+  <!-- elbow 와 wrist_yaw 사이 — 동일 위치, link 길이 0 -->
+  <link name="r_elbow_link">
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <sphere radius="0.028"/>
+      </geometry>
+      <material name="right_color"/>
+    </visual>
+    <inertial>
+      <mass value="0.03"/>
+      <inertia ixx="0.0001" ixy="0" ixz="0" iyy="0.0001" iyz="0" izz="0.0001"/>
+    </inertial>
+  </link>
+
+  <joint name="r_wrist_yaw_joint" type="revolute">
+    <parent link="r_elbow_link"/>
+    <child link="r_forearm_link"/>
+    <origin xyz="0 0 0" rpy="0 0 0"/>
+    <axis xyz="0 0 1"/>
+    <limit lower="-3.14" upper="3.14" effort="3.0" velocity="6.0"/>
+    <dynamics damping="0.05" friction="0.02"/>
+  </joint>
+
+  <!-- Forearm: wrist_yaw 후 → wrist_pitch, 250 mm -->
+  <link name="r_forearm_link">
+    <visual>
+      <origin xyz="0 0 -0.125" rpy="0 0 0"/>
+      <geometry>
+        <cylinder radius="0.028" length="0.25"/>
+      </geometry>
+      <material name="right_color"/>
+    </visual>
+    <collision>
+      <origin xyz="0 0 -0.125" rpy="0 0 0"/>
+      <geometry>
+        <cylinder radius="0.028" length="0.25"/>
+      </geometry>
+    </collision>
+    <inertial>
+      <origin xyz="0 0 -0.125"/>
+      <mass value="0.15"/>
+      <inertia ixx="0.0008" ixy="0" ixz="0" iyy="0.0008" iyz="0" izz="0.0001"/>
+    </inertial>
+  </link>
+
+  <joint name="r_wrist_pitch_joint" type="revolute">
+    <parent link="r_forearm_link"/>
+    <child link="r_hand_link"/>
+    <origin xyz="0 0 -0.25" rpy="0 0 0"/>
+    <axis xyz="0 1 0"/>  <!-- elbow와 같이 부호 반전 -->
+    <limit lower="-1.57" upper="1.57" effort="3.0" velocity="6.0"/>
+    <dynamics damping="0.05" friction="0.02"/>
+  </joint>
+
+  <!-- Hand: 55 mm -->
+  <link name="r_hand_link">
+    <visual>
+      <origin xyz="0 0 -0.0275" rpy="0 0 0"/>
+      <geometry>
+        <box size="0.06 0.025 0.055"/>
+      </geometry>
+      <material name="hand_color"/>
+    </visual>
+    <collision>
+      <origin xyz="0 0 -0.0275" rpy="0 0 0"/>
+      <geometry>
+        <box size="0.06 0.025 0.055"/>
+      </geometry>
+    </collision>
+    <inertial>
+      <origin xyz="0 0 -0.0275"/>
+      <mass value="0.10"/>
+      <inertia ixx="0.0001" ixy="0" ixz="0" iyy="0.0001" iyz="0" izz="0.0001"/>
+    </inertial>
+  </link>
+
+  <!-- ============================================================ -->
+  <!-- ===== Left Arm (mirror)                                   ===== -->
+  <!-- ============================================================ -->
+
+  <joint name="l_shoulder_pitch_joint" type="revolute">
+    <parent link="base_link"/>
+    <child link="l_shoulder_pr_link"/>
+    <origin xyz="0 0.18 0.60" rpy="0 0 0"/>
+    <axis xyz="0 -1 0"/>  <!-- +pitch = arm forward (양팔 같은 부호) -->
+    <limit lower="-3.14" upper="3.14" effort="6.0" velocity="6.0"/>
+    <dynamics damping="0.1" friction="0.05"/>
+  </joint>
+
+  <link name="l_shoulder_pr_link">
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <sphere radius="0.035"/>
+      </geometry>
+      <material name="left_color"/>
+    </visual>
+    <inertial>
+      <mass value="0.05"/>
+      <inertia ixx="0.0001" ixy="0" ixz="0" iyy="0.0001" iyz="0" izz="0.0001"/>
+    </inertial>
+  </link>
+
+  <joint name="l_shoulder_roll_joint" type="revolute">
+    <parent link="l_shoulder_pr_link"/>
+    <child link="l_shoulder_ry_link"/>
+    <origin xyz="0 0 0" rpy="0 0 0"/>
+    <axis xyz="1 0 0"/>  <!-- +roll = arm outward (left arm to +Y; 우/좌 axis 반대) -->
+    <limit lower="-3.14" upper="3.14" effort="6.0" velocity="6.0"/>
+    <dynamics damping="0.1" friction="0.05"/>
+  </joint>
+
+  <link name="l_shoulder_ry_link">
+    <inertial>
+      <mass value="0.03"/>
+      <inertia ixx="0.0001" ixy="0" ixz="0" iyy="0.0001" iyz="0" izz="0.0001"/>
+    </inertial>
+  </link>
+
+  <joint name="l_shoulder_yaw_joint" type="revolute">
+    <parent link="l_shoulder_ry_link"/>
+    <child link="l_upper_arm_link"/>
+    <origin xyz="0 0 0" rpy="0 0 0"/>
+    <axis xyz="0 0 1"/>
+    <limit lower="-3.14" upper="3.14" effort="6.0" velocity="6.0"/>
+    <dynamics damping="0.1" friction="0.05"/>
+  </joint>
+
+  <link name="l_upper_arm_link">
+    <visual>
+      <origin xyz="0 0 -0.125" rpy="0 0 0"/>
+      <geometry>
+        <cylinder radius="0.03" length="0.25"/>
+      </geometry>
+      <material name="left_color"/>
+    </visual>
+    <collision>
+      <origin xyz="0 0 -0.125" rpy="0 0 0"/>
+      <geometry>
+        <cylinder radius="0.03" length="0.25"/>
+      </geometry>
+    </collision>
+    <inertial>
+      <origin xyz="0 0 -0.125"/>
+      <mass value="0.20"/>
+      <inertia ixx="0.001" ixy="0" ixz="0" iyy="0.001" iyz="0" izz="0.0002"/>
+    </inertial>
+  </link>
+
+  <joint name="l_elbow_joint" type="revolute">
+    <parent link="l_upper_arm_link"/>
+    <child link="l_elbow_link"/>
+    <origin xyz="0 0 -0.25" rpy="0 0 0"/>
+    <axis xyz="0 1 0"/>  <!-- right와 같이 부호 반전 -->
+    <limit lower="0.0" upper="2.79" effort="6.0" velocity="6.0"/>
+    <dynamics damping="0.1" friction="0.05"/>
+  </joint>
+
+  <link name="l_elbow_link">
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <sphere radius="0.028"/>
+      </geometry>
+      <material name="left_color"/>
+    </visual>
+    <inertial>
+      <mass value="0.03"/>
+      <inertia ixx="0.0001" ixy="0" ixz="0" iyy="0.0001" iyz="0" izz="0.0001"/>
+    </inertial>
+  </link>
+
+  <joint name="l_wrist_yaw_joint" type="revolute">
+    <parent link="l_elbow_link"/>
+    <child link="l_forearm_link"/>
+    <origin xyz="0 0 0" rpy="0 0 0"/>
+    <axis xyz="0 0 1"/>
+    <limit lower="-3.14" upper="3.14" effort="3.0" velocity="6.0"/>
+    <dynamics damping="0.05" friction="0.02"/>
+  </joint>
+
+  <link name="l_forearm_link">
+    <visual>
+      <origin xyz="0 0 -0.125" rpy="0 0 0"/>
+      <geometry>
+        <cylinder radius="0.028" length="0.25"/>
+      </geometry>
+      <material name="left_color"/>
+    </visual>
+    <collision>
+      <origin xyz="0 0 -0.125" rpy="0 0 0"/>
+      <geometry>
+        <cylinder radius="0.028" length="0.25"/>
+      </geometry>
+    </collision>
+    <inertial>
+      <origin xyz="0 0 -0.125"/>
+      <mass value="0.15"/>
+      <inertia ixx="0.0008" ixy="0" ixz="0" iyy="0.0008" iyz="0" izz="0.0001"/>
+    </inertial>
+  </link>
+
+  <joint name="l_wrist_pitch_joint" type="revolute">
+    <parent link="l_forearm_link"/>
+    <child link="l_hand_link"/>
+    <origin xyz="0 0 -0.25" rpy="0 0 0"/>
+    <axis xyz="0 1 0"/>
+    <limit lower="-1.57" upper="1.57" effort="3.0" velocity="6.0"/>
+    <dynamics damping="0.05" friction="0.02"/>
+  </joint>
+
+  <link name="l_hand_link">
+    <visual>
+      <origin xyz="0 0 -0.0275" rpy="0 0 0"/>
+      <geometry>
+        <box size="0.06 0.025 0.055"/>
+      </geometry>
+      <material name="hand_color"/>
+    </visual>
+    <collision>
+      <origin xyz="0 0 -0.0275" rpy="0 0 0"/>
+      <geometry>
+        <box size="0.06 0.025 0.055"/>
+      </geometry>
+    </collision>
+    <inertial>
+      <origin xyz="0 0 -0.0275"/>
+      <mass value="0.10"/>
+      <inertia ixx="0.0001" ixy="0" ixz="0" iyy="0.0001" iyz="0" izz="0.0001"/>
+    </inertial>
+  </link>
+
+</robot>

@@ -1,0 +1,247 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+    UBP xacro — 파라미터화된 URDF.
+
+    URDF 생성:
+        # ROS-xacro 사용 시
+        xacro ubp.xacro > ubp.urdf
+
+        # 또는 Python xacro 사용 (pip install xacro)
+        python -m xacro ubp.xacro -o ubp.urdf
+
+    아래 <xacro:property> 값만 바꾸면 URDF 전체가 일관되게 업데이트됨.
+    PYO님이 실측치로 갱신할 위치 = 이 한 곳뿐.
+-->
+<robot name="ubp" xmlns:xacro="http://www.ros.org/wiki/xacro">
+
+  <!-- ========================================================== -->
+  <!-- =====  파라미터 (실측치로 교체)                          ===== -->
+  <!-- ========================================================== -->
+  <xacro:property name="TORSO_DEPTH"    value="0.13"/>  <!-- x: 앞뒤 -->
+  <xacro:property name="TORSO_WIDTH"    value="0.20"/>  <!-- y: 좌우 -->
+  <xacro:property name="TORSO_HEIGHT"   value="0.60"/>  <!-- z: 수직 -->
+
+  <xacro:property name="SHOULDER_HALF_W" value="0.18"/>  <!-- 토르소 중심 → 어깨 -->
+  <xacro:property name="SHOULDER_TOP_Z"  value="0.60"/>  <!-- 어깨 높이 = 토르소 꼭대기 -->
+
+  <xacro:property name="UPPER_ARM_LENGTH" value="0.25"/>
+  <xacro:property name="FOREARM_LENGTH"   value="0.25"/>
+  <xacro:property name="HAND_LENGTH"      value="0.055"/>
+
+  <xacro:property name="NECK_HEIGHT"     value="0.05"/>
+  <xacro:property name="HEAD_RADIUS"     value="0.08"/>
+
+  <!-- 시각화 두께 -->
+  <xacro:property name="UPPER_ARM_R" value="0.030"/>
+  <xacro:property name="FOREARM_R"   value="0.028"/>
+  <xacro:property name="JOINT_BALL_R" value="0.035"/>
+
+  <!-- ========================================================== -->
+  <!-- =====  Materials                                         ===== -->
+  <!-- ========================================================== -->
+  <material name="torso_color"><color rgba="0.4 0.4 0.4 1.0"/></material>
+  <material name="right_color"><color rgba="0.85 0.20 0.20 1.0"/></material>
+  <material name="left_color"><color rgba="0.20 0.30 0.85 1.0"/></material>
+  <material name="head_color"><color rgba="0.95 0.85 0.60 1.0"/></material>
+  <material name="hand_color"><color rgba="0.95 0.65 0.45 1.0"/></material>
+
+  <!-- ========================================================== -->
+  <!-- =====  Macros                                            ===== -->
+  <!-- ========================================================== -->
+
+  <!-- 단순 cylinder link (upper arm / forearm 같은 길이 있는 링크) -->
+  <xacro:macro name="cyl_link" params="name length radius mass color">
+    <link name="${name}">
+      <visual>
+        <origin xyz="0 0 ${-length/2}" rpy="0 0 0"/>
+        <geometry><cylinder radius="${radius}" length="${length}"/></geometry>
+        <material name="${color}"/>
+      </visual>
+      <collision>
+        <origin xyz="0 0 ${-length/2}" rpy="0 0 0"/>
+        <geometry><cylinder radius="${radius}" length="${length}"/></geometry>
+      </collision>
+      <inertial>
+        <origin xyz="0 0 ${-length/2}"/>
+        <mass value="${mass}"/>
+        <inertia ixx="${mass*length*length/12}" ixy="0" ixz="0"
+                 iyy="${mass*length*length/12}" iyz="0"
+                 izz="${mass*radius*radius/2}"/>
+      </inertial>
+    </link>
+  </xacro:macro>
+
+  <!-- 회전축이 같은 지점에 모여 있는 mid-link (작은 sphere 시각화) -->
+  <xacro:macro name="ball_link" params="name radius color">
+    <link name="${name}">
+      <visual>
+        <origin xyz="0 0 0"/>
+        <geometry><sphere radius="${radius}"/></geometry>
+        <material name="${color}"/>
+      </visual>
+      <inertial>
+        <mass value="0.03"/>
+        <inertia ixx="1e-5" ixy="0" ixz="0" iyy="1e-5" iyz="0" izz="1e-5"/>
+      </inertial>
+    </link>
+  </xacro:macro>
+
+  <!-- 한쪽 팔 전체 (side는 'r' 또는 'l', y_sign은 +1 또는 -1, roll_sign은 +1 또는 -1) -->
+  <!-- Paper convention (Yi 2012 / DARwIn-OP):
+       +pitch = forward / +roll = outward / +elbow = flexion.
+       Right arm: roll axis = -X; Left arm: roll axis = +X (양팔 반대). -->
+  <xacro:macro name="arm" params="side y_sign roll_sign color">
+    <!-- shoulder_pitch 어깨 위치 -->
+    <joint name="${side}_shoulder_pitch_joint" type="revolute">
+      <parent link="base_link"/>
+      <child link="${side}_shoulder_pr_link"/>
+      <origin xyz="0 ${y_sign*SHOULDER_HALF_W} ${SHOULDER_TOP_Z}" rpy="0 0 0"/>
+      <axis xyz="0 -1 0"/>
+      <limit lower="-3.14" upper="3.14" effort="6.0" velocity="6.0"/>
+      <dynamics damping="0.1" friction="0.05"/>
+    </joint>
+    <xacro:ball_link name="${side}_shoulder_pr_link" radius="${JOINT_BALL_R}" color="${color}"/>
+
+    <joint name="${side}_shoulder_roll_joint" type="revolute">
+      <parent link="${side}_shoulder_pr_link"/>
+      <child link="${side}_shoulder_ry_link"/>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <axis xyz="${roll_sign} 0 0"/>
+      <limit lower="-3.14" upper="3.14" effort="6.0" velocity="6.0"/>
+      <dynamics damping="0.1" friction="0.05"/>
+    </joint>
+    <link name="${side}_shoulder_ry_link">
+      <inertial><mass value="0.03"/>
+        <inertia ixx="1e-5" ixy="0" ixz="0" iyy="1e-5" iyz="0" izz="1e-5"/></inertial>
+    </link>
+
+    <joint name="${side}_shoulder_yaw_joint" type="revolute">
+      <parent link="${side}_shoulder_ry_link"/>
+      <child link="${side}_upper_arm_link"/>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <axis xyz="0 0 1"/>
+      <limit lower="-3.14" upper="3.14" effort="6.0" velocity="6.0"/>
+      <dynamics damping="0.1" friction="0.05"/>
+    </joint>
+    <xacro:cyl_link name="${side}_upper_arm_link" length="${UPPER_ARM_LENGTH}"
+                    radius="${UPPER_ARM_R}" mass="0.20" color="${color}"/>
+
+    <joint name="${side}_elbow_joint" type="revolute">
+      <parent link="${side}_upper_arm_link"/>
+      <child link="${side}_elbow_link"/>
+      <origin xyz="0 0 ${-UPPER_ARM_LENGTH}" rpy="0 0 0"/>
+      <axis xyz="0 1 0"/>
+      <limit lower="0.0" upper="2.79" effort="6.0" velocity="6.0"/>
+      <dynamics damping="0.1" friction="0.05"/>
+    </joint>
+    <xacro:ball_link name="${side}_elbow_link" radius="${FOREARM_R}" color="${color}"/>
+
+    <joint name="${side}_wrist_yaw_joint" type="revolute">
+      <parent link="${side}_elbow_link"/>
+      <child link="${side}_forearm_link"/>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <axis xyz="0 0 1"/>
+      <limit lower="-3.14" upper="3.14" effort="3.0" velocity="6.0"/>
+      <dynamics damping="0.05" friction="0.02"/>
+    </joint>
+    <xacro:cyl_link name="${side}_forearm_link" length="${FOREARM_LENGTH}"
+                    radius="${FOREARM_R}" mass="0.15" color="${color}"/>
+
+    <joint name="${side}_wrist_pitch_joint" type="revolute">
+      <parent link="${side}_forearm_link"/>
+      <child link="${side}_hand_link"/>
+      <origin xyz="0 0 ${-FOREARM_LENGTH}" rpy="0 0 0"/>
+      <axis xyz="0 1 0"/>
+      <limit lower="-1.57" upper="1.57" effort="3.0" velocity="6.0"/>
+      <dynamics damping="0.05" friction="0.02"/>
+    </joint>
+    <link name="${side}_hand_link">
+      <visual>
+        <origin xyz="0 0 ${-HAND_LENGTH/2}" rpy="0 0 0"/>
+        <geometry><box size="0.06 0.025 ${HAND_LENGTH}"/></geometry>
+        <material name="hand_color"/>
+      </visual>
+      <collision>
+        <origin xyz="0 0 ${-HAND_LENGTH/2}" rpy="0 0 0"/>
+        <geometry><box size="0.06 0.025 ${HAND_LENGTH}"/></geometry>
+      </collision>
+      <inertial>
+        <origin xyz="0 0 ${-HAND_LENGTH/2}"/>
+        <mass value="0.10"/>
+        <inertia ixx="1e-4" ixy="0" ixz="0" iyy="1e-4" iyz="0" izz="1e-4"/>
+      </inertial>
+    </link>
+  </xacro:macro>
+
+  <!-- ========================================================== -->
+  <!-- =====  Robot                                             ===== -->
+  <!-- ========================================================== -->
+
+  <!-- 토르소 = base_link (고정, 회전 없음) -->
+  <link name="base_link">
+    <visual>
+      <origin xyz="0 0 ${TORSO_HEIGHT/2}" rpy="0 0 0"/>
+      <geometry><box size="${TORSO_DEPTH} ${TORSO_WIDTH} ${TORSO_HEIGHT}"/></geometry>
+      <material name="torso_color"/>
+    </visual>
+    <collision>
+      <origin xyz="0 0 ${TORSO_HEIGHT/2}" rpy="0 0 0"/>
+      <geometry><box size="${TORSO_DEPTH} ${TORSO_WIDTH} ${TORSO_HEIGHT}"/></geometry>
+    </collision>
+    <inertial>
+      <origin xyz="0 0 ${TORSO_HEIGHT/2}"/>
+      <mass value="3.0"/>
+      <inertia ixx="0.05" ixy="0" ixz="0" iyy="0.05" iyz="0" izz="0.05"/>
+    </inertial>
+  </link>
+
+  <!-- 머리: 2XL430 액추에이터 (neck_yaw + head_pitch 같은 모터 1개) -->
+  <joint name="neck_yaw_joint" type="revolute">
+    <parent link="base_link"/>
+    <child link="neck_link"/>
+    <origin xyz="0 0 ${TORSO_HEIGHT}" rpy="0 0 0"/>
+    <axis xyz="0 0 1"/>
+    <limit lower="-1.57" upper="1.57" effort="6.0" velocity="6.0"/>
+    <dynamics damping="0.1" friction="0.05"/>
+  </joint>
+  <link name="neck_link">
+    <visual>
+      <origin xyz="0 0 ${NECK_HEIGHT/2}"/>
+      <geometry><cylinder radius="0.025" length="${NECK_HEIGHT}"/></geometry>
+      <material name="torso_color"/>
+    </visual>
+    <inertial><mass value="0.05"/>
+      <inertia ixx="1e-4" ixy="0" ixz="0" iyy="1e-4" iyz="0" izz="1e-4"/></inertial>
+  </link>
+
+  <joint name="head_pitch_joint" type="revolute">
+    <parent link="neck_link"/>
+    <child link="head_link"/>
+    <origin xyz="0 0 ${NECK_HEIGHT}" rpy="0 0 0"/>
+    <axis xyz="0 -1 0"/>
+    <limit lower="-1.0" upper="1.0" effort="6.0" velocity="6.0"/>
+    <dynamics damping="0.1" friction="0.05"/>
+  </joint>
+  <link name="head_link">
+    <visual>
+      <origin xyz="0 0 ${HEAD_RADIUS}"/>
+      <geometry><sphere radius="${HEAD_RADIUS}"/></geometry>
+      <material name="head_color"/>
+    </visual>
+    <collision>
+      <origin xyz="0 0 ${HEAD_RADIUS}"/>
+      <geometry><sphere radius="${HEAD_RADIUS}"/></geometry>
+    </collision>
+    <inertial>
+      <origin xyz="0 0 ${HEAD_RADIUS}"/>
+      <mass value="0.3"/>
+      <inertia ixx="0.001" ixy="0" ixz="0" iyy="0.001" iyz="0" izz="0.001"/>
+    </inertial>
+  </link>
+
+  <!-- 양팔 (대칭 macro).
+       roll_sign: 우/좌 어깨 abduction이 같은 +각도일 때 서로 반대 방향이 되도록 부호 분리. -->
+  <xacro:arm side="r" y_sign="-1" roll_sign="-1" color="right_color"/>
+  <xacro:arm side="l" y_sign="+1" roll_sign="+1" color="left_color"/>
+
+</robot>
