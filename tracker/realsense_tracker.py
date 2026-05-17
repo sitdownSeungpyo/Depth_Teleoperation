@@ -16,6 +16,7 @@ import numpy as np
 from numpy.typing import NDArray
 
 from core.types import SkeletonFrame
+from tracker.hand_backend import HAND_LANDMARK_TO_SUFFIX, HandBackend
 
 log = logging.getLogger(__name__)
 
@@ -33,18 +34,7 @@ MEDIAPIPE_LANDMARK_TO_NAME: dict[int, str] = {
     24: "right_hip",
 }
 
-# MediaPipe hand-landmark indices used for wrist orientation + sh_yaw recovery.
-# Reference: https://developers.google.com/mediapipe/solutions/vision/hand_landmarker
-HAND_WRIST_IDX = 0
-HAND_INDEX_MCP_IDX = 5
-HAND_MIDDLE_MCP_IDX = 9
-HAND_PINKY_MCP_IDX = 17
-HAND_LANDMARK_TO_SUFFIX: dict[int, str] = {
-    HAND_WRIST_IDX: "hand_wrist",
-    HAND_INDEX_MCP_IDX: "hand_index_mcp",
-    HAND_MIDDLE_MCP_IDX: "hand_middle_mcp",
-    HAND_PINKY_MCP_IDX: "hand_pinky_mcp",
-}
+# Hand-landmark indices and key suffixes are owned by tracker.hand_backend now.
 
 
 class RealSenseUnavailableError(RuntimeError):
@@ -99,8 +89,7 @@ class RealSenseTracker:
         min_visibility: float = 0.5,
         model_asset_path: str | None = None,
         use_world_landmarks: bool = False,
-        hand_model_asset_path: str | None = None,
-        hand_min_confidence: float = 0.5,
+        hand_backend: HandBackend | None = None,
     ) -> None:
         self._color_resolution = color_resolution
         self._depth_resolution = depth_resolution
@@ -112,10 +101,9 @@ class RealSenseTracker:
         # instead of RealSense depth deprojection. Avoids depth noise at thin body
         # parts (wrist, elbow) — major source of sh_p over-rotation.
         self._use_world_landmarks = use_world_landmarks
-        # Optional hand landmarker for wrist orientation + upper-arm twist (sh_yaw).
-        # When None, hands are skipped; retargeter falls back to 0 for w_yaw/w_pitch/sh_yaw.
-        self._hand_model_asset_path = hand_model_asset_path
-        self._hand_min_confidence = hand_min_confidence
+        # Optional hand backend for wrist orientation + upper-arm twist (sh_yaw).
+        # When None, hands are skipped; retargeter falls back to 0 for w_yaw/w_pitch.
+        self._hand_backend = hand_backend
         self._lock = threading.Lock()
         self._latest: SkeletonFrame | None = None
         self._stop = threading.Event()
@@ -125,7 +113,6 @@ class RealSenseTracker:
         self._depth_scale: float = 0.001
         self._intrinsics: Any = None
         self._landmarker: Any = None
-        self._hand_landmarker: Any = None
         self._hw_offset: float | None = None  # rs_hw_ts - perf_counter offset
         self._last_mp_timestamp_ms: int = 0  # MediaPipe VIDEO mode requires strict monotonicity
 
@@ -164,17 +151,8 @@ class RealSenseTracker:
         )
         self._landmarker = PoseLandmarker.create_from_options(options)
 
-        if self._hand_model_asset_path:
-            HandLandmarker = mp.tasks.vision.HandLandmarker
-            HandLandmarkerOptions = mp.tasks.vision.HandLandmarkerOptions
-            hand_options = HandLandmarkerOptions(
-                base_options=BaseOptions(model_asset_path=self._hand_model_asset_path),
-                running_mode=VisionRunningMode.VIDEO,
-                num_hands=2,
-                min_hand_detection_confidence=self._hand_min_confidence,
-                min_tracking_confidence=self._hand_min_confidence,
-            )
-            self._hand_landmarker = HandLandmarker.create_from_options(hand_options)
+        if self._hand_backend is not None:
+            self._hand_backend.start()
 
     def start(self) -> None:
         if self._thread is not None:
@@ -204,12 +182,11 @@ class RealSenseTracker:
             except Exception:  # noqa: BLE001
                 pass
             self._landmarker = None
-        if self._hand_landmarker is not None:
+        if self._hand_backend is not None:
             try:
-                self._hand_landmarker.close()
+                self._hand_backend.stop()
             except Exception:  # noqa: BLE001
                 pass
-            self._hand_landmarker = None
 
     def latest(self) -> SkeletonFrame | None:
         with self._lock:
@@ -333,87 +310,57 @@ class RealSenseTracker:
             )
 
         # Hand landmarks — optional, for wrist orientation + upper-arm twist (sh_yaw).
-        # Matched to body side by image-coord proximity to pose left/right wrist.
-        if self._hand_landmarker is not None:
+        if self._hand_backend is not None and len(landmarks) > 16:
             self._inject_hand_keypoints(
-                mp_image, timestamp_ms, landmarks, keypoints, confidence
+                rgb, timestamp_ms, landmarks, keypoints, confidence
             )
 
         return SkeletonFrame(timestamp=ts, keypoints=keypoints, confidence=confidence)
 
     def _inject_hand_keypoints(
         self,
-        mp_image: Any,
+        rgb_image: NDArray[np.uint8],
         timestamp_ms: int,
         pose_landmarks: Any,
         keypoints: dict[str, NDArray[np.float64]],
         confidence: dict[str, float],
     ) -> None:
-        """Run HandLandmarker and inject per-side hand keypoints into the frame.
+        """Delegate to the configured HandBackend and merge results into the frame.
 
-        Hand world_landmarks are wrist-relative metric vectors (image-aligned axes,
-        same convention as pose_world_landmarks). We translate them onto the body's
-        wrist position so they share a coordinate system with the rest of the
-        skeleton; the aligner then rotates everything into the torso frame in
-        one shot.
+        Backends return wrist-relative metric vectors in image-aligned axes
+        (same convention as pose_world_landmarks); we translate them onto the
+        body wrist position so the aligner rotates everything together into the
+        torso frame in one shot.
         """
+        assert self._hand_backend is not None
+        body_lw, body_rw = pose_landmarks[15], pose_landmarks[16]
+        body_wrist_image_xy = {
+            "left": (float(body_lw.x), float(body_lw.y)),
+            "right": (float(body_rw.x), float(body_rw.y)),
+        }
         try:
-            hand_result = self._hand_landmarker.detect_for_video(mp_image, timestamp_ms)
+            detections = self._hand_backend.detect(
+                rgb_image, timestamp_ms, body_wrist_image_xy
+            )
         except Exception as exc:  # noqa: BLE001
-            log.debug("hand detect failed: %s", exc)
-            return
-        if not hand_result.hand_landmarks:
+            log.debug("hand backend detect failed: %s", exc)
             return
 
-        # pose_landmarks 15=left_wrist, 16=right_wrist (image-normalized coords).
-        if len(pose_landmarks) <= 16:
-            return
-        body_lw = pose_landmarks[15]
-        body_rw = pose_landmarks[16]
-
-        for i, lm_set in enumerate(hand_result.hand_landmarks):
-            if not lm_set:
-                continue
-            hand_wrist_img = lm_set[HAND_WRIST_IDX]
-            # Match to body side by 2D image-coord proximity (handedness from MediaPipe
-            # is camera-perspective and ambiguous after image flips, so we ignore it).
-            d_l = (hand_wrist_img.x - body_lw.x) ** 2 + (hand_wrist_img.y - body_lw.y) ** 2
-            d_r = (hand_wrist_img.x - body_rw.x) ** 2 + (hand_wrist_img.y - body_rw.y) ** 2
-            side = "left" if d_l < d_r else "right"
-            body_wrist_key = f"{side}_wrist"
+        for det in detections:
+            body_wrist_key = f"{det.side}_wrist"
             if body_wrist_key not in keypoints:
                 continue
             body_wrist_pos = keypoints[body_wrist_key]
             if float(np.linalg.norm(body_wrist_pos)) < 1e-6:
-                # Body wrist itself failed visibility — skip so we don't inject
-                # nonsense anchored on (0,0,0).
+                # Body wrist itself failed visibility — anchoring on (0,0,0) would
+                # corrupt downstream geometry.
                 continue
-
-            world = (
-                hand_result.hand_world_landmarks[i]
-                if hand_result.hand_world_landmarks and i < len(hand_result.hand_world_landmarks)
-                else None
-            )
-            if world is None:
-                continue
-            origin = np.array(
-                [float(world[HAND_WRIST_IDX].x),
-                 float(world[HAND_WRIST_IDX].y),
-                 float(world[HAND_WRIST_IDX].z)],
-                dtype=np.float64,
-            )
-            hand_conf = (
-                float(hand_result.handedness[i][0].score)
-                if hand_result.handedness and i < len(hand_result.handedness)
-                else 1.0
-            )
-            for idx, suffix in HAND_LANDMARK_TO_SUFFIX.items():
-                if idx >= len(world):
+            for idx, rel in det.landmarks.items():
+                suffix = HAND_LANDMARK_TO_SUFFIX.get(idx)
+                if suffix is None:
                     continue
-                p = world[idx]
-                rel = np.array([float(p.x), float(p.y), float(p.z)], dtype=np.float64) - origin
-                keypoints[f"{side}_{suffix}"] = body_wrist_pos + rel
-                confidence[f"{side}_{suffix}"] = hand_conf
+                keypoints[f"{det.side}_{suffix}"] = body_wrist_pos + rel
+                confidence[f"{det.side}_{suffix}"] = det.confidence
 
     def _run(self) -> None:
         rs = _import_realsense()
