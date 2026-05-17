@@ -83,13 +83,21 @@ MediaPipe Hand 대신 HaMeR (Berkeley CVPR 2024, ViT-Huge + MANO) 사용.
 검출률 ~100 %, w_yaw/w_pitch jitter 큰 폭 감소. GPU 필수 (RTX 4070 8 GB
 권장, ~30 ms/hand). MediaPipe 대비 latency 는 ~2x.
 
+총 디스크: ~13 GB (weights 5.7 GB tarball + 압축 해제 + torch). 시간: ~15분.
+
 ```powershell
 .\scripts\install_hamer.ps1
-# step 1: PyTorch + CUDA 12.1 (~3 GB)
-# step 2: HaMeR repo clone + pip install -e .
-# step 3: HaMeR pretrained weights (~1.5 GB)
-# step 4: MANO 다운로드 안내 (MANUAL)
+# step 1: PyTorch + CUDA 12.1 (이미 있으면 skip)
+# step 2: deps (gdown, pyrender, pytorch-lightning, scikit-image, yacs, timm, einops,
+#               chumpy --no-build-isolation, smplx==0.1.28)
+# step 3: HaMeR clone + 패치 (renderer optional) + pip install --no-deps -e .
+#         (detectron2 skip — MediaPipe Pose 의 wrist 좌표로 bbox 만드므로 불필요)
+# step 4: HaMeR pretrained weights (~5.7 GB via UT Austin 직링크)
+# step 5: import sanity check
+# step 6: MANO 다운로드 안내 (MANUAL)
 ```
+
+스크립트는 idempotent — 이미 설치된 단계는 자동 skip.
 
 MANO 다운로드 (수동, 라이센스):
 1. https://mano.is.tue.mpg.de/ register (free, non-commercial only)
@@ -105,6 +113,12 @@ tracker:
     hand_backend: hamer       # mediapipe → hamer
     hamer_device: cuda
 ```
+
+> **Note**: Windows 에서 HaMeR 의 일부 import 가 깨집니다 — pyrender 의 OpenGL.EGL
+> (Linux 전용) + detectron2 C++ build. install_hamer.ps1 이 자동 우회:
+> (a) `hamer/utils/__init__.py` 의 renderer imports 를 try/except wrap (in-place patch),
+> (b) HaMeR 를 `--no-deps` 로 설치 + 필요한 deps 만 별도. 패치는 `third_party/hamer/`
+> (gitignored) 안에서만 적용됨.
 
 ## 실행
 

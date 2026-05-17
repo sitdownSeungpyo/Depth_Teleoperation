@@ -14,3 +14,5 @@ recordings/
 .idea/
 # MediaPipe .task models (5–30 MB each, fetched by scripts/download_mediapipe_model.ps1)
 models/*.task
+# Third-party repos cloned by install scripts (HaMeR ~13 GB with weights)
+third_party/
