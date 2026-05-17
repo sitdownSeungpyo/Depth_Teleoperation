@@ -26,6 +26,13 @@ dev = [
   "ruff>=0.4",
   "mypy>=1.8",
 ]
+# Heavy GPU dependencies for the HaMeR hand backend. Install via
+# scripts/install_hamer.ps1 (also fetches weights + MANO instructions).
+hamer = [
+  "torch>=2.0",
+  "torchvision>=0.15",
+  # 'hamer' is installed via git+pip in install_hamer.ps1 (it isn't on PyPI).
+]
 
 [tool.setuptools.packages.find]
 where = ["."]
