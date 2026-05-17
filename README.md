@@ -76,6 +76,36 @@ imitation_upper/
 pytest -q                                        # 52 passing
 ```
 
+### (Optional) HaMeR backend 셋업 — 손 정확도 ↑↑
+
+`config/ubp.yaml` 의 `tracker.realsense.hand_backend` 를 `hamer` 로 바꾸면
+MediaPipe Hand 대신 HaMeR (Berkeley CVPR 2024, ViT-Huge + MANO) 사용.
+검출률 ~100 %, w_yaw/w_pitch jitter 큰 폭 감소. GPU 필수 (RTX 4070 8 GB
+권장, ~30 ms/hand). MediaPipe 대비 latency 는 ~2x.
+
+```powershell
+.\scripts\install_hamer.ps1
+# step 1: PyTorch + CUDA 12.1 (~3 GB)
+# step 2: HaMeR repo clone + pip install -e .
+# step 3: HaMeR pretrained weights (~1.5 GB)
+# step 4: MANO 다운로드 안내 (MANUAL)
+```
+
+MANO 다운로드 (수동, 라이센스):
+1. https://mano.is.tue.mpg.de/ register (free, non-commercial only)
+2. "Models & Code" → `MANO_v1_2.zip` 다운로드
+3. `MANO_RIGHT.pkl` 만 `third_party/hamer/_DATA/data/mano/` 에 배치
+   (HaMeR 는 left hand 를 right mirror 로 처리하므로 RIGHT 만 필요)
+
+활성화:
+```yaml
+# config/ubp.yaml
+tracker:
+  realsense:
+    hand_backend: hamer       # mediapipe → hamer
+    hamer_device: cuda
+```
+
 ## 실행
 
 ### 시뮬레이션 (MuJoCo, 권장)
