@@ -16,12 +16,13 @@ import numpy as np
 from numpy.typing import NDArray
 
 from core.types import SkeletonFrame
+from tracker.body_backend import BodyBackend
 from tracker.hand_backend import HAND_LANDMARK_TO_SUFFIX, HandBackend
 
 log = logging.getLogger(__name__)
 
-# MediaPipe pose-landmark indices that map to our canonical keypoint names.
-# Reference: https://developers.google.com/mediapipe/solutions/vision/pose_landmarker
+# Re-exported for backward compatibility (used by app.viz_camera). Pose+depth
+# logic now lives in tracker.body_backend.MediaPipeBodyBackend.
 MEDIAPIPE_LANDMARK_TO_NAME: dict[int, str] = {
     0: "head",
     11: "left_shoulder",
@@ -33,8 +34,6 @@ MEDIAPIPE_LANDMARK_TO_NAME: dict[int, str] = {
     23: "left_hip",
     24: "right_hip",
 }
-
-# Hand-landmark indices and key suffixes are owned by tracker.hand_backend now.
 
 
 class RealSenseUnavailableError(RuntimeError):
@@ -49,16 +48,6 @@ def _import_realsense() -> Any:
             "pyrealsense2 not installed; install with `pip install pyrealsense2`"
         ) from exc
     return rs
-
-
-def _import_mediapipe() -> Any:
-    try:
-        import mediapipe as mp  # type: ignore
-    except ImportError as exc:
-        raise RealSenseUnavailableError(
-            "mediapipe not installed; install with `pip install mediapipe`"
-        ) from exc
-    return mp
 
 
 def median_depth_3x3(depth_image: NDArray[np.uint16], px: int, py: int) -> float:
@@ -86,21 +75,17 @@ class RealSenseTracker:
         depth_resolution: tuple[int, int] = (640, 480),
         fps: int = 30,
         depth_max_m: float = 4.0,
-        min_visibility: float = 0.5,
-        model_asset_path: str | None = None,
-        use_world_landmarks: bool = False,
+        body_backend: BodyBackend | None = None,
         hand_backend: HandBackend | None = None,
     ) -> None:
         self._color_resolution = color_resolution
         self._depth_resolution = depth_resolution
         self._fps = fps
         self._depth_max_m = depth_max_m
-        self._min_visibility = min_visibility
-        self._model_asset_path = model_asset_path
-        # If True, use MediaPipe's pose_world_landmarks (3D meters, hip-centered)
-        # instead of RealSense depth deprojection. Avoids depth noise at thin body
-        # parts (wrist, elbow) — major source of sh_p over-rotation.
-        self._use_world_landmarks = use_world_landmarks
+        # Body backend produces the 11 canonical keypoints + bbox + wrist image
+        # coords. MediaPipe by default; can be swapped to HMR2 for occlusion
+        # robustness via config (see tracker.body_backend).
+        self._body_backend = body_backend
         # Optional hand backend for wrist orientation + upper-arm twist (sh_yaw).
         # When None, hands are skipped; retargeter falls back to 0 for w_yaw/w_pitch.
         self._hand_backend = hand_backend
@@ -112,9 +97,8 @@ class RealSenseTracker:
         self._rs_align: Any = None
         self._depth_scale: float = 0.001
         self._intrinsics: Any = None
-        self._landmarker: Any = None
         self._hw_offset: float | None = None  # rs_hw_ts - perf_counter offset
-        self._last_mp_timestamp_ms: int = 0  # MediaPipe VIDEO mode requires strict monotonicity
+        self._last_mp_timestamp_ms: int = 0  # body backends in VIDEO mode need monotonic ts
 
     def _open_pipeline(self) -> None:
         rs = _import_realsense()
@@ -135,30 +119,40 @@ class RealSenseTracker:
         color_profile = profile.get_stream(rs.stream.color)
         self._intrinsics = color_profile.as_video_stream_profile().get_intrinsics()
 
-    def _open_landmarker(self) -> None:
-        mp = _import_mediapipe()
-        BaseOptions = mp.tasks.BaseOptions
-        PoseLandmarker = mp.tasks.vision.PoseLandmarker
-        PoseLandmarkerOptions = mp.tasks.vision.PoseLandmarkerOptions
-        VisionRunningMode = mp.tasks.vision.RunningMode
-        if self._model_asset_path is None:
+    def _open_backends(self) -> None:
+        if self._body_backend is None:
             raise RealSenseUnavailableError(
-                "MediaPipe pose model asset path is required (download pose_landmarker_lite.task)"
+                "RealSenseTracker requires a body_backend (use MediaPipeBodyBackend or Hmr2BodyBackend)"
             )
-        options = PoseLandmarkerOptions(
-            base_options=BaseOptions(model_asset_path=self._model_asset_path),
-            running_mode=VisionRunningMode.VIDEO,
-        )
-        self._landmarker = PoseLandmarker.create_from_options(options)
-
+        # If the body backend (or its inner mediapipe helper for HMR2) needs depth
+        # deprojection, wire it up now that intrinsics + depth_scale are known.
+        self._inject_deprojector(self._body_backend)
+        self._body_backend.start()
         if self._hand_backend is not None:
             self._hand_backend.start()
+
+    def _inject_deprojector(self, backend: Any) -> None:
+        rs = _import_realsense()
+        intr = self._intrinsics
+        depth_scale = self._depth_scale
+
+        def deproject(px: float, py: float, depth_m: float) -> tuple[float, float, float]:
+            xyz = rs.rs2_deproject_pixel_to_point(intr, [px, py], depth_m)
+            return float(xyz[0]), float(xyz[1]), float(xyz[2])
+
+        if hasattr(backend, "set_deprojector"):
+            backend.set_deprojector(deproject, depth_scale)
+        # For composite backends (e.g. Hmr2BodyBackend wraps a MediaPipeBodyBackend),
+        # also walk into the inner helper.
+        inner = getattr(backend, "_mediapipe", None)
+        if inner is not None and hasattr(inner, "set_deprojector"):
+            inner.set_deprojector(deproject, depth_scale)
 
     def start(self) -> None:
         if self._thread is not None:
             return
         self._open_pipeline()
-        self._open_landmarker()
+        self._open_backends()
         self._stop.clear()
         self._thread = threading.Thread(
             target=self._run, name="realsense-tracker", daemon=True
@@ -176,12 +170,11 @@ class RealSenseTracker:
             except Exception:  # noqa: BLE001
                 pass
             self._rs_pipeline = None
-        if self._landmarker is not None:
+        if self._body_backend is not None:
             try:
-                self._landmarker.close()
+                self._body_backend.stop()
             except Exception:  # noqa: BLE001
                 pass
-            self._landmarker = None
         if self._hand_backend is not None:
             try:
                 self._hand_backend.stop()
@@ -213,8 +206,6 @@ class RealSenseTracker:
         return self._hw_offset + hw_ts_ms / 1000.0
 
     def _process_one(self) -> SkeletonFrame | None:
-        rs = _import_realsense()
-        mp = _import_mediapipe()
         try:
             frames = self._rs_pipeline.wait_for_frames(timeout_ms=1000)
         except RuntimeError as exc:
@@ -228,91 +219,33 @@ class RealSenseTracker:
             return None
 
         color_image = np.asanyarray(color_frame.get_data())
-        depth_image_raw = np.asanyarray(depth_frame.get_data())  # uint16, units=depth_scale
-        # Convert to a u16 representation in millimetres-scaled units suitable for median.
-        depth_image = depth_image_raw
+        depth_image: NDArray[np.uint16] = np.asanyarray(depth_frame.get_data())
 
         # 라이브 latency 측정에는 hw 클록 변환 대신 호스트 perf_counter 사용.
         # RealSense hw 클록과 perf_counter 사이 drift (1ms/sec 정도)로 인해
         # 변환된 timestamp가 미래 시간처럼 보여 latency가 음수가 되는 문제를 회피.
-        # hw timestamp는 디버깅용으로만 보존 가능.
         _hw_ts_unused = self._convert_hw_ts(float(color_frame.get_timestamp()))
         ts = time.perf_counter()
 
-        # MediaPipe expects RGB.
-        rgb = color_image[..., ::-1].copy()
-        mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb)
-        # MediaPipe VIDEO mode requires strictly monotonically increasing timestamps.
+        # Backends in VIDEO mode require strictly monotonic ms timestamps.
         timestamp_ms = max(int(ts * 1000), self._last_mp_timestamp_ms + 1)
         self._last_mp_timestamp_ms = timestamp_ms
-        result = self._landmarker.detect_for_video(mp_image, timestamp_ms)
-        if not result.pose_landmarks:
+
+        # MediaPipe / HMR2 expect RGB.
+        rgb = color_image[..., ::-1].copy()
+
+        assert self._body_backend is not None
+        body_det = self._body_backend.detect(rgb, timestamp_ms, depth_image)
+        if body_det is None:
             return None
-        landmarks = result.pose_landmarks[0]
-        world_landmarks = (
-            result.pose_world_landmarks[0]
-            if self._use_world_landmarks and result.pose_world_landmarks
-            else None
-        )
 
-        keypoints: dict[str, NDArray[np.float64]] = {}
-        confidence: dict[str, float] = {}
-        h, w = depth_image.shape
-        for idx, name in MEDIAPIPE_LANDMARK_TO_NAME.items():
-            if idx >= len(landmarks):
-                continue
-            lm = landmarks[idx]
-            visibility = float(getattr(lm, "visibility", 1.0))
-            if visibility < self._min_visibility:
-                keypoints[name] = np.zeros(3, dtype=np.float64)
-                confidence[name] = 0.0
-                continue
+        keypoints = dict(body_det.keypoints)
+        confidence = dict(body_det.confidence)
 
-            if world_landmarks is not None and idx < len(world_landmarks):
-                # MediaPipe pose_world_landmarks: meters, origin at hip center.
-                # BlazePose convention: +x=person's right, +y=up, +z=forward of chest.
-                # 이 값을 그대로 사용. aligner가 u, v, w 정규화로 torso frame 생성.
-                # (이전에 3축 flip 했던 게 cross product 방향을 뒤집어서 sh_p 편향 발생)
-                wlm = world_landmarks[idx]
-                keypoints[name] = np.array(
-                    [float(wlm.x), float(wlm.y), float(wlm.z)],
-                    dtype=np.float64,
-                )
-                confidence[name] = visibility
-                continue
-
-            # Default path: RealSense depth deprojection.
-            px = int(round(lm.x * w))
-            py = int(round(lm.y * h))
-            if px < 0 or px >= w or py < 0 or py >= h:
-                keypoints[name] = np.zeros(3, dtype=np.float64)
-                confidence[name] = 0.0
-                continue
-            depth_units = median_depth_3x3(depth_image, px, py)
-            depth_m = depth_units * self._depth_scale
-            if depth_m <= 0.0 or depth_m > self._depth_max_m:
-                keypoints[name] = np.zeros(3, dtype=np.float64)
-                confidence[name] = 0.0
-                continue
-            xyz = rs.rs2_deproject_pixel_to_point(self._intrinsics, [float(px), float(py)], depth_m)
-            keypoints[name] = np.asarray(xyz, dtype=np.float64)
-            confidence[name] = visibility
-
-        # Synthetic landmarks our pipeline expects.
-        if "left_shoulder" in keypoints and "right_shoulder" in keypoints:
-            keypoints["neck"] = 0.5 * (keypoints["left_shoulder"] + keypoints["right_shoulder"])
-            confidence["neck"] = min(confidence["left_shoulder"], confidence["right_shoulder"])
-        if "left_hip" in keypoints and "right_hip" in keypoints and "neck" in keypoints:
-            mid_hip = 0.5 * (keypoints["left_hip"] + keypoints["right_hip"])
-            keypoints["torso"] = 0.5 * (keypoints["neck"] + mid_hip)
-            confidence["torso"] = min(
-                confidence["neck"], confidence["left_hip"], confidence["right_hip"]
-            )
-
-        # Hand landmarks — optional, for wrist orientation + upper-arm twist (sh_yaw).
-        if self._hand_backend is not None and len(landmarks) > 16:
+        # Hand landmarks — optional, for wrist orientation + upper-arm twist.
+        if self._hand_backend is not None and body_det.wrist_image_xy:
             self._inject_hand_keypoints(
-                rgb, timestamp_ms, landmarks, keypoints, confidence
+                rgb, timestamp_ms, body_det.wrist_image_xy, keypoints, confidence
             )
 
         return SkeletonFrame(timestamp=ts, keypoints=keypoints, confidence=confidence)
@@ -321,7 +254,7 @@ class RealSenseTracker:
         self,
         rgb_image: NDArray[np.uint8],
         timestamp_ms: int,
-        pose_landmarks: Any,
+        wrist_image_xy: dict[str, tuple[float, float]],
         keypoints: dict[str, NDArray[np.float64]],
         confidence: dict[str, float],
     ) -> None:
@@ -333,14 +266,9 @@ class RealSenseTracker:
         torso frame in one shot.
         """
         assert self._hand_backend is not None
-        body_lw, body_rw = pose_landmarks[15], pose_landmarks[16]
-        body_wrist_image_xy = {
-            "left": (float(body_lw.x), float(body_lw.y)),
-            "right": (float(body_rw.x), float(body_rw.y)),
-        }
         try:
             detections = self._hand_backend.detect(
-                rgb_image, timestamp_ms, body_wrist_image_xy
+                rgb_image, timestamp_ms, wrist_image_xy
             )
         except Exception as exc:  # noqa: BLE001
             log.debug("hand backend detect failed: %s", exc)
