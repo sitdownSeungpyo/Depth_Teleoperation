@@ -35,6 +35,7 @@ from core.retarget import (
 from core.safety import PynputHotkey, SafetyConfig, SafetyLayer
 from publisher.mock_publisher import MockPublisher
 from publisher.udp_publisher import UdpPublisherSkeleton
+from tracker.hand_backend import HandBackend, MediaPipeHandBackend
 from tracker.mock_tracker import MockTracker
 
 log = logging.getLogger(__name__)
@@ -94,6 +95,39 @@ def _build_publisher(cfg: dict[str, Any], publisher_kind: str) -> Any:
     raise ValueError(f"unknown publisher: {publisher_kind}")
 
 
+def _build_hand_backend(rs_cfg: dict[str, Any]) -> HandBackend | None:
+    """Build the hand backend selected by ``tracker.realsense.hand_backend``.
+
+    Options: ``mediapipe`` (default, CPU, 7.5 MB model) or ``hamer`` (GPU,
+    requires PyTorch + HaMeR + MANO; see scripts/install_hamer.ps1). When the
+    backend is ``null`` or its model is missing, returns None and the
+    retargeter falls back to 0 for sh_yaw/w_yaw/w_pitch.
+    """
+    backend_name = (rs_cfg.get("hand_backend") or "mediapipe").lower()
+    if backend_name in ("none", "off", "null"):
+        return None
+    if backend_name == "hamer":
+        try:
+            from tracker.hamer_hand_backend import HamerHandBackend
+        except ImportError as exc:
+            log.warning("HaMeR backend unavailable (%s); skipping hand tracking", exc)
+            return None
+        return HamerHandBackend(
+            device=str(rs_cfg.get("hamer_device", "cuda")),
+            checkpoint_path=rs_cfg.get("hamer_checkpoint_path"),
+            mano_dir=rs_cfg.get("mano_dir"),
+        )
+    if backend_name == "mediapipe":
+        model_path = rs_cfg.get("hand_model_asset_path")
+        if not model_path:
+            return None
+        return MediaPipeHandBackend(
+            model_asset_path=str(model_path),
+            min_confidence=float(rs_cfg.get("hand_min_confidence", 0.5)),
+        )
+    raise ValueError(f"unknown hand_backend: {backend_name!r}")
+
+
 def _build_tracker(cfg: dict[str, Any], tracker_kind: str, replay: Path | None) -> Any:
     if tracker_kind == "mock":
         path = replay or Path(cfg.get("tracker", {}).get("mock", {}).get("jsonl_path") or "")
@@ -104,6 +138,7 @@ def _build_tracker(cfg: dict[str, Any], tracker_kind: str, replay: Path | None) 
         from tracker.realsense_tracker import RealSenseTracker
 
         rs_cfg = cfg["tracker"]["realsense"]
+        hand_backend = _build_hand_backend(rs_cfg)
         return RealSenseTracker(
             color_resolution=tuple(rs_cfg["color_resolution"]),
             depth_resolution=tuple(rs_cfg["depth_resolution"]),
@@ -112,8 +147,7 @@ def _build_tracker(cfg: dict[str, Any], tracker_kind: str, replay: Path | None) 
             min_visibility=float(cfg["tracker"]["pose"]["min_visibility"]),
             model_asset_path=rs_cfg.get("model_asset_path"),
             use_world_landmarks=bool(rs_cfg.get("use_world_landmarks", False)),
-            hand_model_asset_path=rs_cfg.get("hand_model_asset_path"),
-            hand_min_confidence=float(rs_cfg.get("hand_min_confidence", 0.5)),
+            hand_backend=hand_backend,
         )
     raise ValueError(f"unknown tracker: {tracker_kind}")
 

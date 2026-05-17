@@ -26,10 +26,17 @@ tracker:
     # MediaPipe pose_world_landmarks 의 +y 가 image-down 이면 [0,-1,0], up 이면 [0,1,0].
     # 처음 실행 후 debug_retarget 의 [AXIS] 로그 보고 결정. 일단 추정값.
     gravity_up: [0.0, -1.0, 0.0]
-    # Hand landmarker — 활성화 시 sh_yaw / w_yaw / w_pitch 도 retarget 됨.
-    # null → 손 추적 off, 해당 관절은 0 passthrough (기존 동작).
+    # Hand tracking backend. "mediapipe" (CPU, 7.5 MB, ~50% 검출률) 또는
+    # "hamer" (GPU 필수, ~1.5 GB, ~100% 검출률, MANO 라이센스 등록 필요).
+    # null/off → 손 추적 비활성 (w_yaw/w_pitch 는 0 passthrough).
+    hand_backend: mediapipe
+    # mediapipe backend params
     hand_model_asset_path: ./models/hand_landmarker.task
     hand_min_confidence: 0.5
+    # hamer backend params — scripts/install_hamer.ps1 로 설치 후 활성화.
+    hamer_device: cuda             # "cuda" or "cpu" (CPU 는 ~500 ms/hand, 사실상 unusable)
+    hamer_checkpoint_path: null    # null → HaMeR default (~/.cache/hamer)
+    mano_dir: null                 # null → HaMeR default (<hamer_repo>/_DATA/data/mano)
   pose:
     model: mediapipe_pose_lite
     min_visibility: 0.1

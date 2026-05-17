@@ -55,6 +55,7 @@ def main() -> int:
     with args.config.open("r", encoding="utf-8") as f:
         cfg = yaml.safe_load(f)
 
+    from app.main import _build_hand_backend
     from tracker.realsense_tracker import RealSenseTracker
 
     rs_cfg = cfg["tracker"]["realsense"]
@@ -66,8 +67,7 @@ def main() -> int:
         min_visibility=float(cfg["tracker"]["pose"]["min_visibility"]),
         model_asset_path=rs_cfg.get("model_asset_path"),
         use_world_landmarks=bool(rs_cfg.get("use_world_landmarks", False)),
-        hand_model_asset_path=rs_cfg.get("hand_model_asset_path"),
-        hand_min_confidence=float(rs_cfg.get("hand_min_confidence", 0.5)),
+        hand_backend=_build_hand_backend(rs_cfg),
     )
 
     robot_cfg = cfg["retarget"]["robot"]
