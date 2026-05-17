@@ -35,6 +35,7 @@ from core.retarget import (
 from core.safety import PynputHotkey, SafetyConfig, SafetyLayer
 from publisher.mock_publisher import MockPublisher
 from publisher.udp_publisher import UdpPublisherSkeleton
+from tracker.body_backend import BodyBackend, MediaPipeBodyBackend
 from tracker.hand_backend import HandBackend, MediaPipeHandBackend
 from tracker.mock_tracker import MockTracker
 
@@ -95,6 +96,44 @@ def _build_publisher(cfg: dict[str, Any], publisher_kind: str) -> Any:
     raise ValueError(f"unknown publisher: {publisher_kind}")
 
 
+def _build_body_backend(rs_cfg: dict[str, Any], pose_cfg: dict[str, Any]) -> BodyBackend:
+    """Build the body-pose backend selected by ``tracker.realsense.body_backend``.
+
+    Options: ``mediapipe`` (default) or ``hmr2`` (4D-Humans / HMR2.0,
+    SMPL-prior, GPU; better under upper-body occlusion). HMR2 wraps a
+    MediaPipe helper internally for the body bbox + wrist image coords.
+    """
+    backend_name = (rs_cfg.get("body_backend") or "mediapipe").lower()
+    model_path = rs_cfg.get("model_asset_path")
+    if not model_path:
+        raise ValueError("tracker.realsense.model_asset_path is required")
+    min_visibility = float(pose_cfg.get("min_visibility", 0.5))
+    use_world = bool(rs_cfg.get("use_world_landmarks", False))
+    depth_max_m = float(rs_cfg.get("depth_max_m", 4.0))
+
+    mp_backend = MediaPipeBodyBackend(
+        model_asset_path=str(model_path),
+        min_visibility=min_visibility,
+        use_world_landmarks=use_world,
+        depth_max_m=depth_max_m,
+    )
+    if backend_name == "mediapipe":
+        return mp_backend
+    if backend_name == "hmr2":
+        try:
+            from tracker.hmr2_body_backend import Hmr2BodyBackend
+        except ImportError as exc:
+            log.warning("HMR2 backend unavailable (%s); falling back to MediaPipe", exc)
+            return mp_backend
+        return Hmr2BodyBackend(
+            mediapipe_helper=mp_backend,
+            device=str(rs_cfg.get("hmr2_device", "cuda")),
+            checkpoint_path=rs_cfg.get("hmr2_checkpoint_path"),
+            bbox_padding=float(rs_cfg.get("hmr2_bbox_padding", 0.15)),
+        )
+    raise ValueError(f"unknown body_backend: {backend_name!r}")
+
+
 def _build_hand_backend(rs_cfg: dict[str, Any]) -> HandBackend | None:
     """Build the hand backend selected by ``tracker.realsense.hand_backend``.
 
@@ -138,15 +177,14 @@ def _build_tracker(cfg: dict[str, Any], tracker_kind: str, replay: Path | None) 
         from tracker.realsense_tracker import RealSenseTracker
 
         rs_cfg = cfg["tracker"]["realsense"]
+        body_backend = _build_body_backend(rs_cfg, cfg["tracker"]["pose"])
         hand_backend = _build_hand_backend(rs_cfg)
         return RealSenseTracker(
             color_resolution=tuple(rs_cfg["color_resolution"]),
             depth_resolution=tuple(rs_cfg["depth_resolution"]),
             fps=int(rs_cfg["fps"]),
             depth_max_m=float(rs_cfg["depth_max_m"]),
-            min_visibility=float(cfg["tracker"]["pose"]["min_visibility"]),
-            model_asset_path=rs_cfg.get("model_asset_path"),
-            use_world_landmarks=bool(rs_cfg.get("use_world_landmarks", False)),
+            body_backend=body_backend,
             hand_backend=hand_backend,
         )
     raise ValueError(f"unknown tracker: {tracker_kind}")

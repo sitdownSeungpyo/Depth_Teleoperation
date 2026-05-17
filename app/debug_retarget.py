@@ -55,7 +55,7 @@ def main() -> int:
     with args.config.open("r", encoding="utf-8") as f:
         cfg = yaml.safe_load(f)
 
-    from app.main import _build_hand_backend
+    from app.main import _build_body_backend, _build_hand_backend
     from tracker.realsense_tracker import RealSenseTracker
 
     rs_cfg = cfg["tracker"]["realsense"]
@@ -64,9 +64,7 @@ def main() -> int:
         depth_resolution=tuple(rs_cfg["depth_resolution"]),
         fps=int(rs_cfg["fps"]),
         depth_max_m=float(rs_cfg["depth_max_m"]),
-        min_visibility=float(cfg["tracker"]["pose"]["min_visibility"]),
-        model_asset_path=rs_cfg.get("model_asset_path"),
-        use_world_landmarks=bool(rs_cfg.get("use_world_landmarks", False)),
+        body_backend=_build_body_backend(rs_cfg, cfg["tracker"]["pose"]),
         hand_backend=_build_hand_backend(rs_cfg),
     )
 

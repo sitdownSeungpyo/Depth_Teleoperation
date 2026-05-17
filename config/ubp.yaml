@@ -26,10 +26,19 @@ tracker:
     # MediaPipe pose_world_landmarks 의 +y 가 image-down 이면 [0,-1,0], up 이면 [0,1,0].
     # 처음 실행 후 debug_retarget 의 [AXIS] 로그 보고 결정. 일단 추정값.
     gravity_up: [0.0, -1.0, 0.0]
+    # Body pose backend. "mediapipe" (CPU, 14 MB, BlazePose Heavy — default) 또는
+    # "hmr2" (GPU 필수, ~670 MB, SMPL prior → 상체 가려도 robust).
+    # scripts/install_hmr2.ps1 로 설치 + SMPL_NEUTRAL.pkl 라이센스 등록 필요.
+    body_backend: mediapipe
+    # hmr2 backend params (body_backend: hmr2 일 때만)
+    hmr2_device: cuda             # "cuda" or "cpu" (CPU 는 unusable, >1s/frame)
+    hmr2_checkpoint_path: null    # null → load_hmr2 가 auto-download (~/.cache/4DHumans)
+    hmr2_bbox_padding: 0.15       # MediaPipe bbox 를 15% 확장 후 HMR2 에 전달
+
     # Hand tracking backend. "mediapipe" (CPU, 7.5 MB, ~50% 검출률) 또는
     # "hamer" (GPU 필수, ~1.5 GB, ~100% 검출률, MANO 라이센스 등록 필요).
     # null/off → 손 추적 비활성 (w_yaw/w_pitch 는 0 passthrough).
-    hand_backend: mediapipe
+    hand_backend: hamer
     # mediapipe backend params
     hand_model_asset_path: ./models/hand_landmarker.task
     hand_min_confidence: 0.5
