@@ -213,6 +213,13 @@ class HamerHandBackend(HandBackend):
             detections.append(HandDetection(side=side, landmarks=landmarks, confidence=1.0))
         return detections
 
+    # HaMeR's ImageNet normalization constants (×255 because preprocessing
+    # divides only later, see hamer/datasets/vitdet_dataset.py for source).
+    # Hardcoded so we don't need to import vitdet_dataset, which transitively
+    # pulls in webdataset etc.
+    _DEFAULT_MEAN = 255.0 * np.array([0.485, 0.456, 0.406], dtype=np.float32)
+    _DEFAULT_STD = 255.0 * np.array([0.229, 0.224, 0.225], dtype=np.float32)
+
     def _forward(self, crops: list[NDArray[np.uint8]], right_flag: list[bool]) -> dict[str, Any]:
         """Run HaMeR forward on a batch of pre-cropped square hand images.
 
@@ -220,14 +227,9 @@ class HamerHandBackend(HandBackend):
         resize to model's input size and normalize with ImageNet mean/std.
         """
         torch = self._torch
-        from hamer.datasets.vitdet_dataset import (  # type: ignore[import-not-found]
-            DEFAULT_MEAN,
-            DEFAULT_STD,
-        )
-
         target = self._model_cfg.MODEL.IMAGE_SIZE
-        mean = np.asarray(DEFAULT_MEAN, dtype=np.float32).reshape(3, 1, 1)
-        std = np.asarray(DEFAULT_STD, dtype=np.float32).reshape(3, 1, 1)
+        mean = self._DEFAULT_MEAN.reshape(3, 1, 1)
+        std = self._DEFAULT_STD.reshape(3, 1, 1)
         tensors: list[Any] = []
         for img in crops:
             # Resize via OpenCV if available; fall back to numpy stride trick.
