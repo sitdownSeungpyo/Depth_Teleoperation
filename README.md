@@ -76,6 +76,41 @@ imitation_upper/
 pytest -q                                        # 52 passing
 ```
 
+### (Optional) HMR2 (4D-Humans) body backend — 상체 occlusion robust
+
+기본 MediaPipe Pose 는 팔이 몸통 앞을 가리면 keypoint 가 흔들립니다. **HMR2.0**
+(Berkeley CVPR 2023, ViT-Huge + SMPL prior) 로 교체 시 SMPL 의 운동학 prior 가
+가려진 joint 도 자연스럽게 채워줍니다. GPU 필수 (RTX 4070 8 GB 권장,
+~50 ms/frame). MediaPipe 대비 약 5x 느림 대신 occlusion 시 안정성 ↑↑.
+
+```powershell
+.\scripts\install_hmr2.ps1
+# step 1: 공통 deps 확인 (install_hamer.ps1 와 공유 — torch, chumpy, smplx ...)
+# step 2: 4D-Humans clone + 패치 (renderer optional) + pip install --no-deps -e .
+#         (detectron2 skip — MediaPipe Pose bbox 로 ViTDet 우회)
+# step 3: HMR2 checkpoint ~670 MB 자동 다운로드 (~/.cache/4DHumans)
+# step 4: import sanity check
+# step 5: SMPL_NEUTRAL.pkl 안내 (MANUAL — 라이센스)
+```
+
+SMPL 다운로드 (수동, 라이센스):
+1. https://smpl.is.tue.mpg.de/ register (free, non-commercial only)
+2. "Download SMPL for Python users" 또는 SMPL v1.0/v1.1 다운로드
+3. zip 안의 `basicmodel_neutral_lbs_10_207_0_v1.0.0.pkl` 을
+   `~/.cache/4DHumans/data/smpl/SMPL_NEUTRAL.pkl` 로 복사 (rename 필수)
+
+활성화:
+```yaml
+# config/ubp.yaml
+tracker:
+  realsense:
+    body_backend: hmr2        # mediapipe → hmr2
+    hmr2_device: cuda
+```
+
+> install_hamer.ps1 와 install_hmr2.ps1 은 동일한 PyTorch/chumpy/smplx 설치를
+> 공유합니다. 한쪽만 쓰는 경우에도 둘 다 의존성 셋업은 동일하게 통과.
+
 ### (Optional) HaMeR backend 셋업 — 손 정확도 ↑↑
 
 `config/ubp.yaml` 의 `tracker.realsense.hand_backend` 를 `hamer` 로 바꾸면
