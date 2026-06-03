@@ -26,11 +26,12 @@ tracker:
     # MediaPipe pose_world_landmarks 의 +y 가 image-down 이면 [0,-1,0], up 이면 [0,1,0].
     # 처음 실행 후 debug_retarget 의 [AXIS] 로그 보고 결정. 일단 추정값.
     gravity_up: [0.0, -1.0, 0.0]
-    # Body pose backend. "mediapipe" (CPU, 14 MB, BlazePose Heavy — default),
-    # "hmr2" (GPU 필수, ~670 MB, SMPL prior → 상체 가려도 robust), 또는
-    # "rtmpose" (GPU, rtmlib+onnxruntime, COCO-17, 2D 안정성↑ → depth deproject).
+    # Body pose backend. "rtmpose" (GPU, rtmlib+onnxruntime, COCO-17, 2D 안정성↑
+    # → RealSense depth deproject — default), "mediapipe" (CPU, 14 MB, BlazePose
+    # Heavy — fallback), 또는 "hmr2" (GPU 필수, ~670 MB, SMPL prior → 상체 가려도 robust).
     # rtmpose: scripts/install_rtmpose.ps1 로 rtmlib + onnxruntime-gpu 설치 필요.
-    body_backend: mediapipe
+    # mediapipe 로 되돌리려면 이 값만 mediapipe 로 바꾸면 됨 (다른 키는 보존).
+    body_backend: rtmpose
     # hmr2 backend params (body_backend: hmr2 일 때만)
     hmr2_device: cuda             # "cuda" or "cpu" (CPU 는 unusable, >1s/frame)
     hmr2_checkpoint_path: null    # null → load_hmr2 가 auto-download (~/.cache/4DHumans)
