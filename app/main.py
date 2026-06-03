@@ -131,6 +131,21 @@ def _build_body_backend(rs_cfg: dict[str, Any], pose_cfg: dict[str, Any]) -> Bod
             checkpoint_path=rs_cfg.get("hmr2_checkpoint_path"),
             bbox_padding=float(rs_cfg.get("hmr2_bbox_padding", 0.15)),
         )
+    if backend_name == "rtmpose":
+        try:
+            from tracker.rtmpose_body_backend import RTMPoseBodyBackend
+        except ImportError as exc:
+            log.warning("RTMPose backend unavailable (%s); falling back to MediaPipe", exc)
+            return mp_backend
+        # RTMPose is 2D-only -> always the depth-deproject path (use_world_landmarks
+        # is ignored here; it only applies to the MediaPipe fallback).
+        return RTMPoseBodyBackend(
+            mode=str(rs_cfg.get("rtmpose_mode", "balanced")),
+            device=str(rs_cfg.get("rtmpose_device", "cuda")),
+            onnx_backend=str(rs_cfg.get("rtmpose_onnx_backend", "onnxruntime")),
+            min_visibility=min_visibility,
+            depth_max_m=depth_max_m,
+        )
     raise ValueError(f"unknown body_backend: {backend_name!r}")
 
 
