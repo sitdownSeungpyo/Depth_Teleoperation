@@ -17,7 +17,10 @@ keeps working when it isn't installed (mirrors the HMR2/HaMeR backends).
 
 from __future__ import annotations
 
+import importlib.util
 import logging
+import os
+from pathlib import Path
 from typing import Any
 
 import numpy as np
@@ -35,6 +38,33 @@ log = logging.getLogger(__name__)
 
 class RTMPoseUnavailableError(RuntimeError):
     """Raised when rtmlib / onnxruntime can't be loaded."""
+
+
+def _ensure_onnx_cuda_dll_path() -> None:
+    """Best-effort: let onnxruntime-gpu's CUDA provider find the CUDA 12 / cuDNN 9
+    runtime DLLs (cublasLt64_12.dll, cudnn64_9.dll, ...).
+
+    onnxruntime-gpu ships the provider DLL but NOT the CUDA runtime itself. On a
+    Windows box without a system CUDA Toolkit, the matching DLLs are bundled
+    inside an installed PyTorch (``torch/lib``). Without them on PATH the CUDA
+    provider fails to initialize and onnxruntime silently falls back to CPU
+    (~775 ms/frame vs ~34 ms on GPU). We locate torch's lib dir without importing
+    torch and prepend it to the DLL search path. No-op when torch isn't installed
+    — then a system CUDA install (if any) is used.
+    """
+    spec = importlib.util.find_spec("torch")
+    if spec is None or not spec.submodule_search_locations:
+        return
+    torch_lib = Path(next(iter(spec.submodule_search_locations))) / "lib"
+    if not torch_lib.is_dir():
+        return
+    lib = str(torch_lib)
+    if lib not in os.environ.get("PATH", ""):
+        os.environ["PATH"] = lib + os.pathsep + os.environ.get("PATH", "")
+    try:
+        os.add_dll_directory(lib)
+    except OSError:  # pragma: no cover - non-Windows / already-added
+        pass
 
 
 class RTMPoseBodyBackend(BodyBackend):
@@ -96,6 +126,8 @@ class RTMPoseBodyBackend(BodyBackend):
         self._depth_scale = depth_scale
 
     def start(self) -> None:
+        if self._device.startswith("cuda"):
+            _ensure_onnx_cuda_dll_path()
         try:
             from rtmlib import Body  # type: ignore[import-not-found]
         except ImportError as exc:
