@@ -1,16 +1,22 @@
-"""Live monitoring window: D435i color stream + MediaPipe keypoints + per-joint
+"""Live monitoring window: D435i color stream + body keypoints + per-joint
 acceptance status. Useful for diagnosing why frames get rejected ("degenerate
 arm geometry", low confidence, depth holes, etc.).
 
-    python -m app.viz_camera --config .\\config\\loose_visibility.yaml
+    python -m app.viz_camera --config .\\config\\ubp.yaml                  # MediaPipe (default)
+    python -m app.viz_camera --config .\\config\\ubp.yaml --backend rtmpose  # RTMPose body-17 (GPU)
 
 Press 'q' or ESC to quit. Press 's' to save a snapshot to .\\recordings\\snap_<ts>.png.
 
 Color legend on overlay:
-- GREEN  filled circle  : keypoint accepted (confidence >= threshold AND valid depth)
-- ORANGE filled circle  : confidence-rejected (visibility too low)
+- GREEN  filled circle  : keypoint accepted (score/visibility >= threshold AND valid depth)
+- ORANGE filled circle  : score-rejected (below min_visibility)
 - RED    filled circle  : depth-rejected (depth=0 or beyond depth_max_m)
 - WHITE  text           : depth in metres at that pixel
+
+For ``--backend rtmpose`` the "confidence" shown is the RTMPose COCO keypoint
+score (same min_visibility gate). The FPS panel reflects backend inference cost
+— watch it stays comfortably above the camera FPS and that wrist/elbow depth
+values are stable (not flickering between a metre value and "depth-bad").
 
 Right-side panel shows per-keypoint confidence and the upper/lower arm vector norms
 that drive the SingularConfigurationError when either is below 1e-6.
@@ -59,9 +65,15 @@ def main() -> int:
     parser.add_argument("--height", type=int, default=480)
     parser.add_argument("--fps", type=int, default=30)
     parser.add_argument(
+        "--backend",
+        choices=("mediapipe", "rtmpose"),
+        default="mediapipe",
+        help="Pose backend for the overlay (default: mediapipe).",
+    )
+    parser.add_argument(
         "--no-mediapipe",
         action="store_true",
-        help="Skip MediaPipe (color+depth feed only).",
+        help="Skip pose detection entirely (color+depth feed only).",
     )
     args = parser.parse_args()
 
@@ -80,7 +92,39 @@ def main() -> int:
 
     landmarker: Any = None
     mp: Any = None
-    if not args.no_mediapipe:
+    rtm_body: Any = None
+    rtm_coco_map: dict[int, str] = {}
+    use_rtmpose = (not args.no_mediapipe) and args.backend == "rtmpose"
+    use_mediapipe = (not args.no_mediapipe) and args.backend == "mediapipe"
+
+    if use_rtmpose:
+        from tracker.rtmpose_body_backend import (
+            RTMPoseBodyBackend,
+            _ensure_onnx_cuda_dll_path,
+        )
+
+        rtm_coco_map = RTMPoseBodyBackend._COCO_TO_NAME
+        device = str(rs_cfg.get("rtmpose_device", "cuda"))
+        if device.startswith("cuda"):
+            _ensure_onnx_cuda_dll_path()
+        try:
+            from rtmlib import Body  # type: ignore
+        except ImportError:
+            print(
+                "rtmlib not installed — run scripts/install_rtmpose.ps1",
+                file=sys.stderr,
+            )
+            return 2
+        print(f"loading RTMPose Body (mode={rs_cfg.get('rtmpose_mode', 'balanced')}, "
+              f"device={device}) — first run downloads ONNX models ...")
+        rtm_body = Body(
+            mode=str(rs_cfg.get("rtmpose_mode", "balanced")),
+            backend=str(rs_cfg.get("rtmpose_onnx_backend", "onnxruntime")),
+            device=device,
+            to_openpose=False,
+        )
+
+    if use_mediapipe:
         if not model_path.exists():
             print(f"MediaPipe model not found at {model_path}", file=sys.stderr)
             return 2
@@ -131,6 +175,30 @@ def main() -> int:
             last_t = t
 
             keypoint_status: dict[str, tuple[tuple[int, int] | None, str, float, float]] = {}
+
+            if rtm_body is not None:
+                # rtmlib wants BGR — `color` already is (rs.format.bgr8).
+                kpts_all, scores_all = rtm_body(color)
+                if kpts_all is not None and len(kpts_all) > 0:
+                    kpts = np.asarray(kpts_all[0], dtype=np.float64)
+                    scrs = np.asarray(scores_all[0], dtype=np.float64)
+                    for idx, name in rtm_coco_map.items():
+                        if idx >= kpts.shape[0]:
+                            continue
+                        score = float(scrs[idx])
+                        px = int(round(kpts[idx, 0]))
+                        py = int(round(kpts[idx, 1]))
+                        if not (0 <= px < w and 0 <= py < h):
+                            keypoint_status[name] = (None, "off-frame", score, 0.0)
+                            continue
+                        if score < min_visibility:
+                            keypoint_status[name] = ((px, py), "vis-low", score, 0.0)
+                            continue
+                        depth_m = median_depth_3x3(depth, px, py) * depth_scale
+                        if depth_m <= 0.0 or depth_m > depth_max_m:
+                            keypoint_status[name] = ((px, py), "depth-bad", score, depth_m)
+                            continue
+                        keypoint_status[name] = ((px, py), "ok", score, depth_m)
 
             if landmarker is not None and mp is not None:
                 rgb = color[..., ::-1].copy()
