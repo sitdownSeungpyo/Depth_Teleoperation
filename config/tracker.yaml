@@ -13,8 +13,11 @@ tracker:
     # ★ 하드웨어 실측 검증 후 켜세요: `python -m app.debug_imu --config .\config\ubp.yaml`
     #   로 측정 up 벡터가 아래(-y)를 향하고 tilt 가 맞는지 확인. 부호가 반대면
     #   imu.axis_sign: -1.0. IMU 미연결/실패 시 자동으로 아래 gravity_up 폴백.
-    enable_imu: false
+    # [검증 2026-06-08] D435i 실측: up=[-0.046,-0.988,+0.150], tilt 9.0°, |a|≈9.60,
+    #   부호 정상(axis_sign=1.0). 카메라가 실제 ~9° 기울어져 있어 고정값 대비 이득 → 켬.
+    enable_imu: true
     imu:
+      accel_fps: 200         # D435i accel 은 100/200/400 만 지원(미지정 시 start 실패)
       lpf_alpha: 0.02        # 가속도 EMA 평활(작을수록 부드럽고 재거치 반영 느림)
       warmup_frames: 10      # 이 샘플 수 누적 전엔 fixed gravity_up 폴백
       norm_tol: 0.30         # |‖a‖−g|/g 가 이보다 크면(흔들림/이동) 그 샘플 거부

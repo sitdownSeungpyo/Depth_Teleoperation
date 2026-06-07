@@ -60,8 +60,9 @@ def main() -> int:
     fps = int(rs_cfg["fps"])
     pipe = rs.pipeline()
     conf = rs.config()
+    accel_fps = int(imu_cfg.get("accel_fps", 200))  # D435i: 100/200/400 only
     conf.enable_stream(rs.stream.color, color_res[0], color_res[1], rs.format.bgr8, fps)
-    conf.enable_stream(rs.stream.accel, rs.format.motion_xyz32f)
+    conf.enable_stream(rs.stream.accel, rs.format.motion_xyz32f, accel_fps)
     try:
         profile = pipe.start(conf)
     except Exception as exc:  # noqa: BLE001

@@ -207,6 +207,7 @@ def _build_tracker(cfg: dict[str, Any], tracker_kind: str, replay: Path | None) 
             body_backend=body_backend,
             hand_backend=hand_backend,
             enable_imu=bool(rs_cfg.get("enable_imu", False)),
+            accel_fps=int(imu_cfg.get("accel_fps", 200)),
             gravity_lpf_alpha=float(imu_cfg.get("lpf_alpha", 0.02)),
             gravity_warmup_frames=int(imu_cfg.get("warmup_frames", 10)),
             gravity_norm_tol=float(imu_cfg.get("norm_tol", 0.30)),

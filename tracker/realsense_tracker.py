@@ -78,6 +78,7 @@ class RealSenseTracker:
         body_backend: BodyBackend | None = None,
         hand_backend: HandBackend | None = None,
         enable_imu: bool = False,
+        accel_fps: int = 200,
         gravity_lpf_alpha: float = 0.02,
         gravity_warmup_frames: int = 10,
         gravity_norm_tol: float = 0.30,
@@ -91,6 +92,7 @@ class RealSenseTracker:
         # measured torso-up vector is produced for the aligner (replaces the
         # hard-coded config gravity_up). Pure estimation logic in tracker.gravity.
         self._enable_imu = bool(enable_imu)
+        self._accel_fps = int(accel_fps)
         self._gravity_est: Any = None
         if self._enable_imu:
             from tracker.gravity import GravityEstimator
@@ -142,7 +144,9 @@ class RealSenseTracker:
         )
         if self._enable_imu:
             # Accelerometer only (gyro not needed for gravity-up on a static mount).
-            cfg.enable_stream(rs.stream.accel, rs.format.motion_xyz32f)
+            # D435i accel offers 100/200/400 fps — the rate MUST be given or
+            # pipeline.start raises "Couldn't resolve requests".
+            cfg.enable_stream(rs.stream.accel, rs.format.motion_xyz32f, self._accel_fps)
         self._rs_pipeline = rs.pipeline()
         profile = self._rs_pipeline.start(cfg)
         self._rs_align = rs.align(rs.stream.color)
