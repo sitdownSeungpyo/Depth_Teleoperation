@@ -60,6 +60,13 @@ class RobotModel:
         self.frame_R = np.asarray(R, dtype=np.float64) if R is not None else np.eye(3)
 
         ik_cfg = robot_cfg.get("ik", {})
+        # Dedicated joint-limit block (rad), overrides the model's jnt_range in
+        # the IK. Keyed by joint name (full or canonical); each arm's IK picks
+        # the joints it actuates. Empty -> fall back to model limits.
+        jl_cfg = robot_cfg.get("joint_limits") or {}
+        self.joint_limits: dict[str, tuple[float, float]] = {
+            str(k): (float(v[0]), float(v[1])) for k, v in jl_cfg.items()
+        }
         self.arms: dict[str, _Arm] = {}
         for side, c in robot_cfg["arms"].items():
             ik = ArmPositionIK(
@@ -72,6 +79,7 @@ class RobotModel:
                 max_iters=int(ik_cfg.get("max_iters", 16)),
                 pos_tol=float(ik_cfg.get("pos_tol", 2e-3)),
                 step_clip=float(ik_cfg.get("step_clip", 0.35)),
+                joint_limits=self.joint_limits,
             )
             sh = ik.body_pos(self.data, "shoulder")
             el = ik.body_pos(self.data, "elbow")

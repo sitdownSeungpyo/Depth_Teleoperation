@@ -107,6 +107,10 @@ def main() -> int:
               f"filter={'off' if args.no_filter else 'one_euro'}  "
               f"link_lengths={ {s: tuple(round(x,3) for x in v) for s,v in rm.link_lengths().items()} }",
               flush=True)
+        if rm.joint_limits:
+            print(f"IK joint_limits (rad, overrides model): {rm.joint_limits}", flush=True)
+        else:
+            print("IK joint_limits: (none in config) -> using model jnt_range", flush=True)
     else:
         from core.retarget import (
             Calibration, CalibrationCollector, RobotGeometry,

@@ -53,6 +53,7 @@ class ArmPositionIK:
         max_iters: int = 16,
         pos_tol: float = 2e-3,
         step_clip: float = 0.35,
+        joint_limits: dict[str, tuple[float, float]] | None = None,
     ) -> None:
         import mujoco
 
@@ -72,6 +73,15 @@ class ArmPositionIK:
             else:
                 lo.append(-np.inf); hi.append(np.inf)
         self.lo = np.array(lo); self.hi = np.array(hi)
+        # Dedicated joint-limit config (robot.joint_limits) overrides the model's
+        # jnt_range so limits track the real robot independent of placeholder
+        # model dims. Matched by full ("r_elbow_joint") or canonical ("r_elbow").
+        if joint_limits:
+            for i, n in enumerate(self.joint_names):
+                canon = n[:-6] if n.endswith("_joint") else n
+                lim = joint_limits.get(n, joint_limits.get(canon))
+                if lim is not None:
+                    self.lo[i] = float(lim[0]); self.hi[i] = float(lim[1])
         self.sb = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, shoulder_body)
         self.eb = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, elbow_body)
         self.wb = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, wrist_body)
@@ -119,5 +129,8 @@ class ArmPositionIK:
             dq = np.clip(dq, -self.step_clip, self.step_clip)
             q = np.clip(data.qpos[self.qadr] + dq, self.lo, self.hi)
             data.qpos[self.qadr] = q
+        # Final command clamp — guarantee the returned/applied angles are within
+        # [lo, hi] even if the loop converged before an update this call.
+        data.qpos[self.qadr] = np.clip(data.qpos[self.qadr], self.lo, self.hi)
         mj.mj_forward(self.model, data)
         return {n: float(data.qpos[a]) for n, a in zip(self.joint_names, self.qadr)}

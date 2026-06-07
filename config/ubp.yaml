@@ -139,6 +139,21 @@ robot:
     max_iters: 16        # 프레임당 반복 (워밍스타트라 보통 2~5회면 수렴)
     pos_tol: 0.002       # 수렴 허용오차 (m)
     step_clip: 0.35      # 반복당 관절 변화 상한 (rad)
+  # ===== JOINT LIMITS (IK 전용, rad) =====
+  # IK가 반복마다 + 최종 커맨드에서 각 관절을 아래 [min,max]로 clamp 한다.
+  # ★ 모델(jnt_range)보다 우선 적용 — 여기 있는 관절만 덮어쓰고, 없으면 모델값 사용.
+  #   실제 로봇 받으면 이 블록을 로봇 사양으로 채우면 됨(모델 안 고쳐도 됨).
+  # 어깨 pitch/roll 은 주 자유도라 넓게, shoulder_yaw(상완 트위스트)는 좁혀
+  # 비정상 비틀림(DLS 여유자유도 폭주)을 막고, elbow 는 과신전 방지(0~).
+  joint_limits:
+    r_shoulder_pitch: [-3.14, 3.14]
+    r_shoulder_roll:  [-3.14, 3.14]
+    r_shoulder_yaw:   [-1.57, 1.57]
+    r_elbow:          [0.0, 2.79]
+    l_shoulder_pitch: [-3.14, 3.14]
+    l_shoulder_roll:  [-3.14, 3.14]
+    l_shoulder_yaw:   [-1.57, 1.57]
+    l_elbow:          [0.0, 2.79]
   arms:
     right:
       joints: [r_shoulder_pitch_joint, r_shoulder_roll_joint, r_shoulder_yaw_joint, r_elbow_joint]

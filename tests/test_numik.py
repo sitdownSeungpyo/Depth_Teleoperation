@@ -81,3 +81,51 @@ def test_link_lengths_measured_from_model() -> None:
     rm = RobotModel(_cfg())
     for side, (u, l) in rm.link_lengths().items():
         assert 0.1 < u < 0.5 and 0.1 < l < 0.5, f"{side} lengths ({u},{l}) implausible"
+
+
+def test_config_joint_limits_override_model_and_are_enforced() -> None:
+    """robot.joint_limits must override the model's jnt_range and clamp every
+    solved angle, even for poses that 'want' to exceed them."""
+    cfg = _cfg()
+    cfg["joint_limits"] = {
+        "r_shoulder_yaw": [-0.2, 0.2],   # much tighter than model ±3.14
+        "r_elbow": [0.0, 1.0],           # tighter than model [0, 3.05]
+    }
+    rm = RobotModel(cfg)
+    ik = rm.arms["right"].ik
+    # Limits actually loaded into the solver.
+    lo = dict(zip(ik.joint_names, ik.lo))
+    hi = dict(zip(ik.joint_names, ik.hi))
+    assert (lo["r_shoulder_yaw_joint"], hi["r_shoulder_yaw_joint"]) == (-0.2, 0.2)
+    assert (lo["r_elbow_joint"], hi["r_elbow_joint"]) == (0.0, 1.0)
+    # Sweep poses; no solved angle may leave its configured band.
+    for th in [0.4, 0.9, 1.4]:
+        for ph in [-1.2, 0.0, 1.2]:
+            for bend in [0.0, 1.0, 2.0]:
+                u = np.array([math.sin(th) * math.cos(ph), -math.cos(th),
+                              math.sin(th) * math.sin(ph)])
+                perp = np.cross(u, [0, -1.0, 0])
+                if np.linalg.norm(perp) < 1e-6:
+                    perp = np.array([1.0, 0, 0])
+                f = _rot(u, perp, bend)
+                rm.data.qpos[:] = 0
+                sol = rm.solve_arm("right", np.zeros(3), UPPER_OP * u,
+                                   UPPER_OP * u + LOWER_OP * f)
+                assert sol is not None
+                assert -0.2 - 1e-6 <= sol["r_shoulder_yaw_joint"] <= 0.2 + 1e-6
+                assert 0.0 - 1e-6 <= sol["r_elbow_joint"] <= 1.0 + 1e-6
+
+
+def test_config_in_repo_loads_joint_limits() -> None:
+    """The shipped config/ubp.yaml robot.joint_limits is picked up by RobotModel."""
+    import yaml
+    from pathlib import Path
+
+    cfg = yaml.safe_load(Path("config/ubp.yaml").read_text(encoding="utf-8"))
+    rm = RobotModel(dict(cfg["robot"]))
+    ik = rm.arms["right"].ik
+    hi = dict(zip(ik.joint_names, ik.hi))
+    lo = dict(zip(ik.joint_names, ik.lo))
+    # shoulder_yaw tightened to ±1.57 in the shipped config (vs model ±3.14).
+    assert hi["r_shoulder_yaw_joint"] == pytest.approx(1.57)
+    assert lo["r_shoulder_yaw_joint"] == pytest.approx(-1.57)
