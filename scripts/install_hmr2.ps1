@@ -26,9 +26,45 @@ $HmrDir = Join-Path $ProjectRoot "third_party\4D-Humans"
 $SmplPkl = Join-Path $env:USERPROFILE ".cache\4DHumans\data\smpl\SMPL_NEUTRAL.pkl"
 
 # ---------------------------------------------------------------------------
+# chumpy 0.70 (pulled in for SMPL .pkl loading) predates Python 3.11 + numpy 2:
+#   - inspect.getargspec was removed in 3.11 (chumpy/ch.py still calls it)
+#   - `from numpy import bool, int, float, ... ` aliases removed in numpy 2
+# Patch chumpy/__init__.py idempotently so `import chumpy` (and SMPL load) works.
+Write-Output "==> Step 0/5: patch chumpy for Python 3.11 + numpy 2"
+$chumpyInit = Join-Path $ProjectRoot ".venv\Lib\site-packages\chumpy\__init__.py"
+if (Test-Path $chumpyInit) {
+    $c = Get-Content $chumpyInit -Raw
+    if ($c -match 'from numpy import bool, int, float, complex, object, unicode, str, nan, inf') {
+        Write-Output "  patching $chumpyInit"
+        $c = $c -replace 'from \.ch import \*', @'
+import inspect as _inspect
+if not hasattr(_inspect, "getargspec"):
+    _inspect.getargspec = _inspect.getfullargspec
+from .ch import *
+'@
+        $c = $c -replace 'from numpy import bool, int, float, complex, object, unicode, str, nan, inf', @'
+from builtins import bool, int, float, complex, object, str
+unicode = str
+from numpy import nan, inf
+'@
+        Set-Content -Path $chumpyInit -Value $c -NoNewline
+    } else {
+        Write-Output "  chumpy already patched (or not present yet)"
+    }
+} else {
+    Write-Output "  chumpy not installed yet — will be patched on a later run if needed"
+}
+
+# ---------------------------------------------------------------------------
 Write-Output "==> Step 1/5: shared deps (PyTorch + chumpy + smplx + ...)"
+# NB: relax ErrorActionPreference around native-exe stderr redirects. In PS 5.1,
+# `2>$null` on a python check that fails wraps stderr as a terminating
+# NativeCommandError under -ErrorActionPreference Stop, aborting the script.
+$ErrorActionPreference = 'SilentlyContinue'
 & $py -c "import torch, chumpy, smplx, pytorch_lightning, timm" 2>$null
-if ($LASTEXITCODE -ne 0) {
+$sharedOk = ($LASTEXITCODE -eq 0)
+$ErrorActionPreference = 'Stop'
+if (-not $sharedOk) {
     Write-Output "  shared deps missing — run scripts\install_hamer.ps1 first (or install manually)."
     Write-Output "  Required: torch (cu121), chumpy --no-build-isolation, smplx==0.1.28,"
     Write-Output "            pytorch-lightning, timm, einops, gdown, pyrender, scikit-image, yacs"
@@ -54,7 +90,7 @@ if (Test-Path $utilsInit) {
     if ($utilsContent -notmatch "try:\s*\r?\n\s*from \.renderer") {
         Write-Output "  patching $utilsInit (make renderer imports optional)"
         $patched = $utilsContent -replace `
-            '(from \.renderer import Renderer.*?from \.skeleton_renderer import SkeletonRenderer)', `
+            '(?s)(from \.renderer import Renderer.*?from \.skeleton_renderer import SkeletonRenderer)', `
 @'
 # Renderer imports are optional — pyrender fails to load on Windows without
 # EGL/OSMesa. We only need the inference path, so swallow ImportError.
@@ -71,10 +107,26 @@ except ImportError:
     }
 }
 
+# Patch hmr2/models/hmr2.py — SkeletonRenderer/MeshRenderer are None on Windows
+# (made optional above). Guard their instantiation in __init__ so loading the
+# model doesn't call None(...) (they're visualization-only, unused for inference).
+$hmr2Py = Join-Path $HmrDir "hmr2\models\hmr2.py"
+if (Test-Path $hmr2Py) {
+    $hc = Get-Content $hmr2Py -Raw
+    if ($hc -match 'if init_renderer:') {
+        Write-Output "  patching $hmr2Py (guard renderer instantiation)"
+        $hc = $hc -replace 'if init_renderer:', 'if init_renderer and SkeletonRenderer is not None and MeshRenderer is not None:'
+        Set-Content -Path $hmr2Py -Value $hc -NoNewline
+    }
+}
+
 # Install hmr2 package with --no-deps so detectron2 is skipped. Required deps
 # are already satisfied above.
+$ErrorActionPreference = 'SilentlyContinue'
 & $py -c "import hmr2" 2>$null
-if ($LASTEXITCODE -ne 0) {
+$hmr2Installed = ($LASTEXITCODE -eq 0)
+$ErrorActionPreference = 'Stop'
+if (-not $hmr2Installed) {
     Push-Location $HmrDir
     try {
         & $pip install --no-deps -e .
@@ -83,6 +135,14 @@ if ($LASTEXITCODE -ne 0) {
         Pop-Location
     }
 }
+
+# `pip install --no-deps` above skips HMR2 runtime deps not in the shared HaMeR
+# set. Install the ones the inference path needs (pip no-ops if already present):
+#   omegaconf / hydra-core / pyrootutils -> load model_config.yaml
+#   webdataset                           -> hmr2.datasets.vitdet_dataset (ViTDetDataset)
+#   dill                                 -> convert_pkl() for the SMPL .pkl (Step 5)
+Write-Output "  installing HMR2 inference deps (omegaconf, hydra-core, pyrootutils, webdataset, dill)"
+& $pip install omegaconf hydra-core pyrootutils webdataset dill
 
 # ---------------------------------------------------------------------------
 Write-Output "==> Step 3/5: HMR2 checkpoint (~670 MB)"
@@ -93,16 +153,21 @@ $CkptGlob = Join-Path $CacheDir "logs\train\multiruns\hmr2\0\checkpoints\*.ckpt"
 if (Test-Path $CkptGlob) {
     Write-Output "  checkpoint already cached at $CacheDir"
 } else {
-    Write-Output "  triggering load_hmr2() to auto-download..."
-    & $py -c @'
-from hmr2.models import download_models, DEFAULT_CHECKPOINT
-import os, pathlib
-cache = pathlib.Path(os.path.expanduser("~/.cache/4DHumans"))
-download_models(cache)
-print("downloaded to", cache)
-'@
-    if ($LASTEXITCODE -ne 0) {
-        Write-Warning "auto-download failed; check network. Manual mirror: https://huggingface.co/spaces/brjathu/HMR2.0"
+    Write-Output "  triggering download_models() to auto-download..."
+    # Single -c line, no inner path string: download_models() defaults to
+    # ~/.cache/4DHumans. (A here-string with quoted paths gets mangled when PS
+    # passes it to python.exe -c.)
+    & $py -c "from hmr2.models import download_models; download_models()"
+    # download_models() saves hmr2_data.tar.gz but its auto-extract fails on
+    # Windows (the archive is actually a plain tar mis-named .tar.gz), leaving
+    # only the tarball. Extract it explicitly with bsdtar (ships with Win10+).
+    $tar = Join-Path $CacheDir "hmr2_data.tar.gz"
+    if ((-not (Test-Path $CkptGlob)) -and (Test-Path $tar)) {
+        Write-Output "  extracting hmr2_data.tar.gz ..."
+        tar -xf "$tar" -C "$CacheDir"
+    }
+    if (-not (Test-Path $CkptGlob)) {
+        Write-Warning "checkpoint still missing; check network/extraction. Manual mirror: https://huggingface.co/spaces/brjathu/HMR2.0"
     }
 }
 

@@ -149,6 +149,23 @@ def main() -> int:
         median_depth_3x3,
     )
 
+    # Robust depth lifter for the RTMPose path so the overlay's per-joint depth
+    # matches the (improved) estimation pipeline instead of the raw 3x3 median.
+    rtm_lifter = None
+    if use_rtmpose:
+        from tracker.depth_lift import RobustDepthLifter
+
+        dl = rs_cfg.get("depth_lift") or {}
+        if dl.get("enabled", True):
+            rtm_lifter = RobustDepthLifter(
+                depth_scale=depth_scale,
+                depth_max_m=depth_max_m,
+                window=int(dl.get("window", 7)),
+                foreground_percentile=float(dl.get("foreground_percentile", 40.0)),
+                max_jump_m=float(dl.get("max_jump_m", 0.25)),
+                max_stale_frames=int(dl.get("max_stale_frames", 5)),
+            )
+
     last_mp_ts = 0
     fps_smoothed = 0.0
     last_t = time.perf_counter()
@@ -182,6 +199,8 @@ def main() -> int:
                 if kpts_all is not None and len(kpts_all) > 0:
                     kpts = np.asarray(kpts_all[0], dtype=np.float64)
                     scrs = np.asarray(scores_all[0], dtype=np.float64)
+                    if rtm_lifter is not None:
+                        rtm_lifter.begin_frame()
                     for idx, name in rtm_coco_map.items():
                         if idx >= kpts.shape[0]:
                             continue
@@ -194,9 +213,13 @@ def main() -> int:
                         if score < min_visibility:
                             keypoint_status[name] = ((px, py), "vis-low", score, 0.0)
                             continue
-                        depth_m = median_depth_3x3(depth, px, py) * depth_scale
-                        if depth_m <= 0.0 or depth_m > depth_max_m:
-                            keypoint_status[name] = ((px, py), "depth-bad", score, depth_m)
+                        if rtm_lifter is not None:
+                            depth_m = rtm_lifter.lift(name, depth, px, py)
+                        else:
+                            d = median_depth_3x3(depth, px, py) * depth_scale
+                            depth_m = d if (0.0 < d <= depth_max_m) else None
+                        if depth_m is None:
+                            keypoint_status[name] = ((px, py), "depth-bad", score, 0.0)
                             continue
                         keypoint_status[name] = ((px, py), "ok", score, depth_m)
 

@@ -97,6 +97,14 @@ class RealSenseTracker:
         self._rs_align: Any = None
         self._depth_scale: float = 0.001
         self._intrinsics: Any = None
+        # Exposed for live monitors (app.viz_teleop): most recent BGR color frame
+        # and pinhole intrinsics (fx, fy, ppx, ppy). Written by the capture thread,
+        # read by the UI thread; a numpy reference swap is atomic in CPython so no
+        # lock is needed for a best-effort viz snapshot.
+        self._latest_color: NDArray[np.uint8] | None = None
+        self._intr_params: tuple[float, float, float, float] | None = None
+        # Most recent raw body detection (bbox + wrist image coords) for monitors.
+        self._latest_detection: Any = None
         self._hw_offset: float | None = None  # rs_hw_ts - perf_counter offset
         self._last_mp_timestamp_ms: int = 0  # body backends in VIDEO mode need monotonic ts
 
@@ -118,6 +126,12 @@ class RealSenseTracker:
         self._depth_scale = float(depth_sensor.get_depth_scale())
         color_profile = profile.get_stream(rs.stream.color)
         self._intrinsics = color_profile.as_video_stream_profile().get_intrinsics()
+        self._intr_params = (
+            float(self._intrinsics.fx),
+            float(self._intrinsics.fy),
+            float(self._intrinsics.ppx),
+            float(self._intrinsics.ppy),
+        )
 
     def _open_backends(self) -> None:
         if self._body_backend is None:
@@ -185,6 +199,23 @@ class RealSenseTracker:
         with self._lock:
             return self._latest
 
+    def latest_color(self) -> NDArray[np.uint8] | None:
+        """Most recent BGR color frame (for live monitors). None until first capture."""
+        return self._latest_color
+
+    @property
+    def intrinsics_params(self) -> tuple[float, float, float, float] | None:
+        """Color-stream pinhole intrinsics (fx, fy, ppx, ppy). None until started."""
+        return self._intr_params
+
+    def latest_detection(self) -> Any:
+        """Most recent body detection (bbox + wrist image coords), or None on miss.
+
+        Reliable image-space info for monitors — independent of the backend's 3D
+        coordinate scale (HMR2's virtual-camera metric won't reproject onto the
+        RealSense image, but the bbox/wrist pixels always will)."""
+        return self._latest_detection
+
     def stream(self) -> Iterator[SkeletonFrame]:
         # The threaded design exposes frames via latest(); a blocking iterator just
         # polls. Most callers should use the Protocol's latest() instead.
@@ -220,6 +251,8 @@ class RealSenseTracker:
 
         color_image = np.asanyarray(color_frame.get_data())
         depth_image: NDArray[np.uint16] = np.asanyarray(depth_frame.get_data())
+        # Expose the live BGR frame for monitors even when detection later fails.
+        self._latest_color = color_image
 
         # 라이브 latency 측정에는 hw 클록 변환 대신 호스트 perf_counter 사용.
         # RealSense hw 클록과 perf_counter 사이 drift (1ms/sec 정도)로 인해
@@ -236,6 +269,7 @@ class RealSenseTracker:
 
         assert self._body_backend is not None
         body_det = self._body_backend.detect(rgb, timestamp_ms, depth_image)
+        self._latest_detection = body_det  # expose for monitors (None on miss)
         if body_det is None:
             return None
 

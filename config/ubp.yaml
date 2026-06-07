@@ -26,12 +26,24 @@ tracker:
     # MediaPipe pose_world_landmarks 의 +y 가 image-down 이면 [0,-1,0], up 이면 [0,1,0].
     # 처음 실행 후 debug_retarget 의 [AXIS] 로그 보고 결정. 일단 추정값.
     gravity_up: [0.0, -1.0, 0.0]
-    # Body pose backend. "rtmpose" (GPU, rtmlib+onnxruntime, COCO-17, 2D 안정성↑
-    # → RealSense depth deproject — default), "mediapipe" (CPU, 14 MB, BlazePose
-    # Heavy — fallback), 또는 "hmr2" (GPU 필수, ~670 MB, SMPL prior → 상체 가려도 robust).
-    # rtmpose: scripts/install_rtmpose.ps1 로 rtmlib + onnxruntime-gpu 설치 필요.
-    # mediapipe 로 되돌리려면 이 값만 mediapipe 로 바꾸면 됨 (다른 키는 보존).
+    # Body pose backend. "hmr2" (GPU, SMPL-prior 모델 3D → forward/back(z) 안정 +
+    # 가림 robust — default), "rtmpose" (GPU, rtmlib+onnxruntime, 2D + depth deproject;
+    # 얇은 부위 z 노이즈로 앞뒤 불안정), "mediapipe" (CPU, BlazePose Heavy).
+    # hmr2: scripts/install_hmr2.ps1 로 4D-Humans + 체크포인트 + SMPL_NEUTRAL.pkl 설치 필요.
+    # 다른 백엔드로 되돌리려면 이 값만 바꾸면 됨 (다른 키는 보존).
     body_backend: rtmpose
+    # rtmpose 견고한 깊이 복원 (body_backend: rtmpose 일 때만). RealSense depth 를
+    # 제대로 활용해 elbow 압축·앞뒤 떨림 동시 해결. tracker/depth_lift.py 참고.
+    depth_lift:
+      enabled: true               # false → 레거시 3x3 median
+      window: 7                   # 깊이 샘플 창 크기(px). 얇은 팔이면 7~9 권장
+      foreground_percentile: 40   # 창 안에서 가까운 N% (몸 표면)만 채택 → 배경섞임 차단
+      max_jump_m: 0.25            # 프레임당 이보다 큰 깊이 점프는 스파이크로 보고 1프레임 보류
+      max_stale_frames: 5         # 깊이 홀일 때 직전 유효값 재사용 최대 프레임 수
+      bone_stabilize: true        # 온라인 뼈길이 정규화(shoulder→elbow→wrist) z지터 억제
+      bone_history: 60            # 뼈길이 running-median 윈도우(프레임)
+      bone_ratio_min: 0.5         # 길이 보정 비율 하한 (급변 방지)
+      bone_ratio_max: 2.0         # 길이 보정 비율 상한
     # hmr2 backend params (body_backend: hmr2 일 때만)
     hmr2_device: cuda             # "cuda" or "cpu" (CPU 는 unusable, >1s/frame)
     hmr2_checkpoint_path: null    # null → load_hmr2 가 auto-download (~/.cache/4DHumans)
@@ -45,7 +57,7 @@ tracker:
     # Hand tracking backend. "mediapipe" (CPU, 7.5 MB, ~50% 검출률) 또는
     # "hamer" (GPU 필수, ~1.5 GB, ~100% 검출률, MANO 라이센스 등록 필요).
     # null/off → 손 추적 비활성 (w_yaw/w_pitch 는 0 passthrough).
-    hand_backend: hamer
+    hand_backend: mediapipe
     # mediapipe backend params
     hand_model_asset_path: ./models/hand_landmarker.task
     hand_min_confidence: 0.5
@@ -69,10 +81,10 @@ retarget:
   operator_calibration: t_pose_hold
   fixed_arm_length: 0.55
   calibration_frames: 30
-  # theta_1 = atan2(z,x) - theta_5 (Yi 2012 식 3) 에서 -theta_5 제거.
-  # MediaPipe elbow 노이즈가 sh_p 로 propagate 되는 것을 차단해 sh_p 안정성 ↑.
-  # 단점: 완전 굽힌 팔에서 손 위치가 약간 어긋날 수 있음 (보통 무시 가능).
-  decouple_pitch_elbow: true
+  # theta_1 = atan2(z,x) - theta_5 (Yi 2012 식 3). false = 논문 그대로 (-theta_5 유지).
+  # true 로 두면 -theta_5 를 제거(MediaPipe elbow 노이즈 격리용 변형)했었으나, RTMPose+
+  # 견고깊이로 elbow 키포인트가 안정되어 논문 충실 모드(false)로 복원.
+  decouple_pitch_elbow: false
   # ===== Per-joint REST-POSE OFFSET =====
   # 캘리브레이션 단계에서 자동 캡쳐 (default). 운영자가 calibration_frames 동안
   # 양팔 자연스럽게 hang → 그 자세의 retargeter 출력 평균을 rest_offsets 로 사용
@@ -92,8 +104,11 @@ retarget:
     l_shoulder_roll: 1.0
     r_shoulder_yaw: 1.0
     l_shoulder_yaw: 1.0
-    r_elbow: 1.0
-    l_elbow: 1.0
+    # HMR2 가 elbow 굴곡을 ~3.3배 과소평가함(정면뷰+SMPL prior 깊이 평균회귀).
+    # 운영자 90도 굽힘 → retarget elbow 동적범위 ~27도뿐. 압축비만큼 증폭해 보정.
+    # debug_elbow.py 측정 근거. 정지시 jitter 거슬리면 keypoint_smoother 강화 또는 값 ↓.
+    r_elbow: 3.0
+    l_elbow: 3.0
     r_wrist_yaw: 1.0
     l_wrist_yaw: 1.0
     r_wrist_pitch: 1.0
@@ -101,6 +116,40 @@ retarget:
     torso_yaw: 1.0
     neck_yaw: 1.0
     head_pitch: 1.0
+
+# ===== ROBOT MODEL (numerical task-space IK) =====
+# core/robot_model.py + core/numik.py. 자료(Ryan/Jiang/OmniDP/MIRROR) 기반 표준:
+# 로봇 모델 위에서 elbow+wrist 위치를 동시에 추종하는 수치 IK (Jiang의 joint+
+# Cartesian 절충). 해석 IK(Yi 2012)의 굽힘 부정확을 제거. app.sim_teleop --ik numeric.
+#
+# ★ URDF/xacro/sdf 드롭인: 실제 로봇 받으면 아래 4개만 바꾸면 즉시 적용됨 —
+#   model_path / arms.*.{shoulder,elbow,wrist}_body / arms.*.joints / operator_to_robot_R.
+#   링크 길이·어깨 위치는 모델에서 자동 측정(임의 치수 자동 대체).
+#   - URDF: MuJoCo from_xml_path 가 직접 로드 (필요시 URDF 안에 <mujoco><compiler/> 추가).
+#   - xacro: `xacro robot.xacro > robot.urdf` 먼저 → 생성된 urdf 지정.
+#   - SDF: MuJoCo 미지원 → URDF/MJCF 로 변환 후 사용.
+robot:
+  model_path: ./models/upperbody_sim.xml
+  # 운영자 torso 프레임(+x right,+y up,+z fwd) → 로봇 world 프레임 회전.
+  # upperbody_sim 은 root euler 로 y-up torso 를 z-up world 로: (x,y,z)→(x,-z,y).
+  # 실제 로봇 URDF 의 base 좌표계에 맞춰 이 행렬만 교체.
+  operator_to_robot_R: [[1, 0, 0], [0, 0, -1], [0, 1, 0]]
+  ik:
+    damping: 0.08        # DLS λ (m). 특이점 안정성↔수렴속도
+    max_iters: 16        # 프레임당 반복 (워밍스타트라 보통 2~5회면 수렴)
+    pos_tol: 0.002       # 수렴 허용오차 (m)
+    step_clip: 0.35      # 반복당 관절 변화 상한 (rad)
+  arms:
+    right:
+      joints: [r_shoulder_pitch_joint, r_shoulder_roll_joint, r_shoulder_yaw_joint, r_elbow_joint]
+      shoulder_body: r_shoulder_pitch_link
+      elbow_body: r_elbow_link
+      wrist_body: r_hand_link
+    left:
+      joints: [l_shoulder_pitch_joint, l_shoulder_roll_joint, l_shoulder_yaw_joint, l_elbow_joint]
+      shoulder_body: l_shoulder_pitch_link
+      elbow_body: l_elbow_link
+      wrist_body: l_hand_link
 
 filter:
   # ===== 튜닝 가이드 =====

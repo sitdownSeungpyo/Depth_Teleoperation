@@ -32,6 +32,11 @@ from tracker.body_backend import (
     DepthDeprojector,
     _median_depth_3x3,
 )
+from tracker.depth_lift import (
+    ARM_SEGMENTS,
+    BoneLengthStabilizer,
+    RobustDepthLifter,
+)
 
 log = logging.getLogger(__name__)
 
@@ -108,22 +113,46 @@ class RTMPoseBodyBackend(BodyBackend):
         onnx_backend: str = "onnxruntime",
         min_visibility: float = 0.5,
         depth_max_m: float = 4.0,
+        depth_lift: dict[str, Any] | None = None,
     ) -> None:
         self._mode = mode
         self._device = device
         self._onnx_backend = onnx_backend
         self._min_visibility = min_visibility
         self._depth_max_m = depth_max_m
+        # Robust depth-lift config (see tracker.depth_lift). None / {enabled:false}
+        # falls back to the legacy 3x3-median path.
+        self._depth_lift_cfg = depth_lift or {}
         # Injected by RealSenseTracker once intrinsics + depth_scale are known.
         self._depth_scale: float = 0.001
         self._deproject: DepthDeprojector | None = None
         self._body: Any = None
+        self._lifter: RobustDepthLifter | None = None
+        self._stabilizer: BoneLengthStabilizer | None = None
+        if self._depth_lift_cfg.get("bone_stabilize", True):
+            self._stabilizer = BoneLengthStabilizer(
+                ARM_SEGMENTS,
+                history=int(self._depth_lift_cfg.get("bone_history", 60)),
+                ratio_min=float(self._depth_lift_cfg.get("bone_ratio_min", 0.5)),
+                ratio_max=float(self._depth_lift_cfg.get("bone_ratio_max", 2.0)),
+            )
 
     def set_deprojector(self, deprojector: DepthDeprojector, depth_scale: float) -> None:
         """Wire in the camera's depth -> 3D unprojection (required: RTMPose is
         2D-only, so every keypoint goes through depth deprojection)."""
         self._deproject = deprojector
         self._depth_scale = depth_scale
+        if self._depth_lift_cfg.get("enabled", True):
+            self._lifter = RobustDepthLifter(
+                depth_scale=depth_scale,
+                depth_max_m=self._depth_max_m,
+                window=int(self._depth_lift_cfg.get("window", 7)),
+                foreground_percentile=float(
+                    self._depth_lift_cfg.get("foreground_percentile", 40.0)
+                ),
+                max_jump_m=float(self._depth_lift_cfg.get("max_jump_m", 0.25)),
+                max_stale_frames=int(self._depth_lift_cfg.get("max_stale_frames", 5)),
+            )
 
     def start(self) -> None:
         if self._device.startswith("cuda"):
@@ -176,6 +205,8 @@ class RTMPoseBodyBackend(BodyBackend):
         keypoints: dict[str, NDArray[np.float64]] = {}
         confidence: dict[str, float] = {}
         h, w = rgb_image.shape[:2]
+        if self._lifter is not None:
+            self._lifter.begin_frame()
 
         for idx, name in self._COCO_TO_NAME.items():
             if idx >= kpts.shape[0]:
@@ -194,14 +225,25 @@ class RTMPoseBodyBackend(BodyBackend):
                 keypoints[name] = np.zeros(3, dtype=np.float64)
                 confidence[name] = 0.0
                 continue
-            depth_m = _median_depth_3x3(depth_image, px, py) * self._depth_scale
-            if depth_m <= 0.0 or depth_m > self._depth_max_m:
+            # Robust depth (foreground select + temporal gate/hole-fill); falls
+            # back to the legacy 3x3 median when no lifter is configured.
+            if self._lifter is not None:
+                depth_m = self._lifter.lift(name, depth_image, px, py)
+            else:
+                d = _median_depth_3x3(depth_image, px, py) * self._depth_scale
+                depth_m = d if (0.0 < d <= self._depth_max_m) else None
+            if depth_m is None:
                 keypoints[name] = np.zeros(3, dtype=np.float64)
                 confidence[name] = 0.0
                 continue
             xyz = self._deproject(float(px), float(py), depth_m)
             keypoints[name] = np.asarray(xyz, dtype=np.float64)
             confidence[name] = score
+
+        # Bone-length stabilization on the arm chain (before synthetic neck/torso,
+        # which derive from the more stable shoulders/hips).
+        if self._stabilizer is not None:
+            keypoints = self._stabilizer(keypoints)
 
         # Synthetic landmarks expected downstream (same logic as MediaPipe path).
         if "left_shoulder" in keypoints and "right_shoulder" in keypoints:

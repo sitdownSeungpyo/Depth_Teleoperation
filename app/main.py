@@ -145,6 +145,7 @@ def _build_body_backend(rs_cfg: dict[str, Any], pose_cfg: dict[str, Any]) -> Bod
             onnx_backend=str(rs_cfg.get("rtmpose_onnx_backend", "onnxruntime")),
             min_visibility=min_visibility,
             depth_max_m=depth_max_m,
+            depth_lift=rs_cfg.get("depth_lift"),
         )
     raise ValueError(f"unknown body_backend: {backend_name!r}")
 

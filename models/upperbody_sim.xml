@@ -1,0 +1,147 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  upperbody_sim.xml — upper-body robot for visualizing the live estimation→IK
+  pipeline. Link lengths/masses are ARBITRARY placeholders (no real robot/URDF/DH
+  yet). The JOINT AXES, however, are derived to match the paper's analytic IK
+  (Yi 2012, spec Eq.1-3) by a CLOSED-LOOP search: synthetic operator pose →
+  core.retarget (Eq.1-3) → this model's FK → compare to operator. The chosen axes
+  give 0.00 deg wrist-direction error for STRAIGHT arms (exact). Bent-arm poses
+  carry the paper IK's inherent 3-DOF approximation (it reaches the hand target,
+  trading upper-arm direction) — that is a property of Eq.3 (-theta_5), not a model
+  bug. See tests/test_sim_kinematics.py for the verification.
+
+  Joint axes are expressed in a torso-local y-up frame (+x right, +y up, +z fwd;
+  arm rest -y), exactly as verified:
+      RIGHT  shoulder_pitch -y   shoulder_roll +z   elbow -x
+      LEFT   shoulder_pitch +y   shoulder_roll -z   elbow -x
+  A root body rotates this y-up structure into MuJoCo's z-up world purely for a
+  natural upright view (rigid transform — does not change joint behavior).
+  Drive kinematically (set qpos + mj_forward) via app.sim_teleop / app.viz_teleop.
+-->
+<mujoco model="upperbody_sim">
+  <compiler angle="radian" coordinate="local"/>
+  <option timestep="0.002" gravity="0 0 -9.81" integrator="RK4"/>
+
+  <default>
+    <joint type="hinge" damping="0.2" armature="0.002"/>
+    <geom contype="0" conaffinity="0"/>
+    <position kp="60" kv="3"/>
+  </default>
+
+  <asset>
+    <texture type="skybox" builtin="gradient" rgb1=".3 .5 .7" rgb2="0 0 0" width="100" height="100"/>
+    <texture name="grid" type="2d" builtin="checker" rgb1=".15 .2 .25" rgb2=".2 .3 .35" width="300" height="300"/>
+    <material name="grid_mat" texture="grid" texrepeat="3 3" reflectance=".2"/>
+    <material name="torso_mat" rgba="0.35 0.35 0.40 1"/>
+    <material name="right_mat" rgba="0.85 0.25 0.25 1"/>
+    <material name="left_mat"  rgba="0.25 0.45 0.85 1"/>
+    <material name="head_mat"  rgba="0.95 0.85 0.60 1"/>
+    <material name="hand_mat"  rgba="0.95 0.65 0.45 1"/>
+  </asset>
+
+  <worldbody>
+    <light pos="0.6 0.6 2.5" dir="-0.4 -0.4 -1" diffuse=".9 .9 .9"/>
+    <light pos="-0.6 -0.6 2.5" dir="0.4 0.4 -1" diffuse=".4 .4 .4"/>
+    <geom name="floor" type="plane" size="3 3 0.1" pos="0 0 0" material="grid_mat"/>
+
+    <!-- root: rotate torso-local y-up frame into world z-up (view only). -->
+    <body name="root" pos="0 0 0" euler="1.5708 0 0">
+      <body name="pelvis" pos="0 0 0">
+        <geom name="post_geom" type="cylinder" fromto="0 0 0 0 1.10 0" size="0.05" material="torso_mat" mass="2.0"/>
+        <geom name="torso_geom" type="box" size="0.07 0.20 0.18" pos="0 1.25 0" material="torso_mat" mass="4.0"/>
+        <inertial pos="0 1.0 0" mass="6.0" diaginertia="0.1 0.1 0.05"/>
+
+        <!-- Head -->
+        <body name="neck_link" pos="0 1.50 0">
+          <joint name="neck_yaw_joint" axis="0 1 0" range="-1.57 1.57"/>
+          <geom type="cylinder" fromto="0 0 0 0 0.06 0" size="0.025" material="torso_mat" mass="0.1"/>
+          <inertial pos="0 0.03 0" mass="0.1" diaginertia="1e-4 1e-4 1e-4"/>
+          <body name="head_link" pos="0 0.06 0">
+            <joint name="head_pitch_joint" axis="-1 0 0" range="-1.0 1.0"/>
+            <geom type="sphere" size="0.085" pos="0 0.085 0" material="head_mat" mass="0.5"/>
+            <inertial pos="0 0.085 0" mass="0.5" diaginertia="2e-3 2e-3 2e-3"/>
+          </body>
+        </body>
+
+        <!-- ===================== RIGHT ARM (+x side) ===================== -->
+        <body name="r_shoulder_pitch_link" pos="0.18 1.42 0">
+          <joint name="r_shoulder_pitch_joint" axis="0 -1 0" range="-3.14 3.14"/>
+          <geom type="sphere" size="0.04" material="right_mat" mass="0.1"/>
+          <inertial pos="0 0 0" mass="0.1" diaginertia="1e-4 1e-4 1e-4"/>
+          <body name="r_shoulder_roll_link">
+            <joint name="r_shoulder_roll_joint" axis="0 0 1" range="-3.14 3.14"/>
+            <inertial pos="0 0 0" mass="0.05" diaginertia="1e-4 1e-4 1e-4"/>
+            <body name="r_shoulder_yaw_link">
+              <joint name="r_shoulder_yaw_joint" axis="0 -1 0" range="-3.14 3.14"/>
+              <geom name="r_upper_arm" type="capsule" fromto="0 0 0 0 -0.26 0" size="0.035" material="right_mat" mass="0.4"/>
+              <inertial pos="0 -0.13 0" mass="0.4" diaginertia="3e-3 3e-3 5e-4"/>
+              <body name="r_elbow_link" pos="0 -0.26 0">
+                <joint name="r_elbow_joint" axis="-1 0 0" range="0 3.05"/>
+                <geom type="sphere" size="0.032" material="right_mat" mass="0.05"/>
+                <inertial pos="0 0 0" mass="0.05" diaginertia="1e-4 1e-4 1e-4"/>
+                <body name="r_forearm_link">
+                  <joint name="r_wrist_yaw_joint" axis="0 -1 0" range="-3.14 3.14"/>
+                  <geom name="r_forearm" type="capsule" fromto="0 0 0 0 -0.24 0" size="0.030" material="right_mat" mass="0.3"/>
+                  <inertial pos="0 -0.12 0" mass="0.3" diaginertia="2e-3 2e-3 4e-4"/>
+                  <body name="r_hand_link" pos="0 -0.24 0">
+                    <joint name="r_wrist_pitch_joint" axis="-1 0 0" range="-1.57 1.57"/>
+                    <geom type="box" size="0.015 0.05 0.035" pos="0 -0.05 0" material="hand_mat" mass="0.15"/>
+                    <inertial pos="0 -0.05 0" mass="0.15" diaginertia="2e-4 2e-4 2e-4"/>
+                  </body>
+                </body>
+              </body>
+            </body>
+          </body>
+        </body>
+
+        <!-- ===================== LEFT ARM (-x side, mirror) ===================== -->
+        <body name="l_shoulder_pitch_link" pos="-0.18 1.42 0">
+          <joint name="l_shoulder_pitch_joint" axis="0 1 0" range="-3.14 3.14"/>
+          <geom type="sphere" size="0.04" material="left_mat" mass="0.1"/>
+          <inertial pos="0 0 0" mass="0.1" diaginertia="1e-4 1e-4 1e-4"/>
+          <body name="l_shoulder_roll_link">
+            <joint name="l_shoulder_roll_joint" axis="0 0 -1" range="-3.14 3.14"/>
+            <inertial pos="0 0 0" mass="0.05" diaginertia="1e-4 1e-4 1e-4"/>
+            <body name="l_shoulder_yaw_link">
+              <joint name="l_shoulder_yaw_joint" axis="0 -1 0" range="-3.14 3.14"/>
+              <geom name="l_upper_arm" type="capsule" fromto="0 0 0 0 -0.26 0" size="0.035" material="left_mat" mass="0.4"/>
+              <inertial pos="0 -0.13 0" mass="0.4" diaginertia="3e-3 3e-3 5e-4"/>
+              <body name="l_elbow_link" pos="0 -0.26 0">
+                <joint name="l_elbow_joint" axis="-1 0 0" range="0 3.05"/>
+                <geom type="sphere" size="0.032" material="left_mat" mass="0.05"/>
+                <inertial pos="0 0 0" mass="0.05" diaginertia="1e-4 1e-4 1e-4"/>
+                <body name="l_forearm_link">
+                  <joint name="l_wrist_yaw_joint" axis="0 -1 0" range="-3.14 3.14"/>
+                  <geom name="l_forearm" type="capsule" fromto="0 0 0 0 -0.24 0" size="0.030" material="left_mat" mass="0.3"/>
+                  <inertial pos="0 -0.12 0" mass="0.3" diaginertia="2e-3 2e-3 4e-4"/>
+                  <body name="l_hand_link" pos="0 -0.24 0">
+                    <joint name="l_wrist_pitch_joint" axis="-1 0 0" range="-1.57 1.57"/>
+                    <geom type="box" size="0.015 0.05 0.035" pos="0 -0.05 0" material="hand_mat" mass="0.15"/>
+                    <inertial pos="0 -0.05 0" mass="0.15" diaginertia="2e-4 2e-4 2e-4"/>
+                  </body>
+                </body>
+              </body>
+            </body>
+          </body>
+        </body>
+      </body>
+    </body>
+  </worldbody>
+
+  <actuator>
+    <position name="neck_yaw_act"         joint="neck_yaw_joint"         ctrlrange="-1.57 1.57"/>
+    <position name="head_pitch_act"       joint="head_pitch_joint"       ctrlrange="-1.0 1.0"/>
+    <position name="r_shoulder_pitch_act" joint="r_shoulder_pitch_joint" kp="100" ctrlrange="-3.14 3.14"/>
+    <position name="r_shoulder_roll_act"  joint="r_shoulder_roll_joint"  kp="100" ctrlrange="-3.14 3.14"/>
+    <position name="r_shoulder_yaw_act"   joint="r_shoulder_yaw_joint"   ctrlrange="-3.14 3.14"/>
+    <position name="r_elbow_act"          joint="r_elbow_joint"          ctrlrange="0 3.05"/>
+    <position name="r_wrist_yaw_act"      joint="r_wrist_yaw_joint"      ctrlrange="-3.14 3.14"/>
+    <position name="r_wrist_pitch_act"    joint="r_wrist_pitch_joint"    ctrlrange="-1.57 1.57"/>
+    <position name="l_shoulder_pitch_act" joint="l_shoulder_pitch_joint" kp="100" ctrlrange="-3.14 3.14"/>
+    <position name="l_shoulder_roll_act"  joint="l_shoulder_roll_joint"  kp="100" ctrlrange="-3.14 3.14"/>
+    <position name="l_shoulder_yaw_act"   joint="l_shoulder_yaw_joint"   ctrlrange="-3.14 3.14"/>
+    <position name="l_elbow_act"          joint="l_elbow_joint"          ctrlrange="0 3.05"/>
+    <position name="l_wrist_yaw_act"      joint="l_wrist_yaw_joint"      ctrlrange="-3.14 3.14"/>
+    <position name="l_wrist_pitch_act"    joint="l_wrist_pitch_joint"    ctrlrange="-1.57 1.57"/>
+  </actuator>
+</mujoco>

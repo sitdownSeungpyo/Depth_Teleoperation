@@ -16,3 +16,5 @@ recordings/
 models/*.task
 # Third-party repos cloned by install scripts (HaMeR ~13 GB with weights)
 third_party/
+# Large third-party model weights (SMPL neutral body ~247 MB) fetched by install scripts
+data/

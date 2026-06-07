@@ -259,18 +259,15 @@ def retarget_arm(
     # controller wants them. The angles below are scale-invariant by construction.
     _ = scale
 
-    # Eq. 1 — elbow flexion.
-    # Yi 2012 원본은 upper · lower로 계산하지만, MediaPipe elbow 위치가 부정확하면
-    # theta_5가 과대 평가되어 theta_1과 redundant하게 보상 (sh_p 과도 진동 원인).
-    # 대안: law of cosines로 c (shoulder→wrist 거리)만 사용해서 elbow 각도 계산.
-    # → 안정된 wrist position만 의존, MediaPipe elbow 노이즈로부터 격리.
-    a = calibration.operator_arm_length / 2  # 단순 1:1 split (upper:lower)
-    b = a
-    # Clamp c to feasible triangle range [|a-b|, a+b]. Beyond → invalid geometry.
-    c_clamped = min(max(c, abs(a - b)), a + b)
-    cos_inner = float((a * a + b * b - c_clamped * c_clamped) / (2 * a * b))
-    inner_angle = _safe_arccos(cos_inner)  # angle at elbow vertex (arccos clamps too)
-    theta_5 = math.pi - inner_angle  # 0 = straight, π = fully folded
+    # Eq. 1 (Yi 2012, spec §1.1/§4.3 FR-3.2) — elbow flexion = angle between the
+    # upper-arm vector a_u (shoulder→elbow) and lower-arm vector a_l (elbow→wrist):
+    #   theta_5 = arccos( a_u · a_l / (|a_u| |a_l|) )   0 = straight, π = folded.
+    # This uses the elbow keypoint directly (paper-faithful). Earlier code used a
+    # law-of-cosines proxy on c=|shoulder→wrist| to dodge noisy MediaPipe elbows;
+    # with the RTMPose + robust-depth + bone-stabilizer pipeline the elbow keypoint
+    # is reliable, so we use the paper equation. (-theta_5 in Eq.3 below requires it.)
+    cos_elbow = float(np.dot(upper, lower) / (upper_n * lower_n))
+    theta_5 = _safe_arccos(cos_elbow)
 
     # Eq. 2 — shoulder elevation. Aligner is +y up, paper is +y down → negate.
     y_paper = -float(s_to_w[1])
