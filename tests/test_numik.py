@@ -116,6 +116,27 @@ def test_config_joint_limits_override_model_and_are_enforced() -> None:
                 assert 0.0 - 1e-6 <= sol["r_elbow_joint"] <= 1.0 + 1e-6
 
 
+def test_target_jump_limiter_clamps_endpoint_step() -> None:
+    """An abnormal endpoint jump is clamped to max_target_step_m of the last
+    target; a genuine move slews; the limiter is off by default."""
+    cfg = _cfg()
+    cfg["ik"] = {**cfg["ik"], "max_target_step_m": 0.05}
+    rm = RobotModel(cfg)
+    a = np.array([0.1, 0.0, 1.0])
+    seeded = rm._limit_step("k", a.copy())  # first call seeds, no clamp
+    np.testing.assert_allclose(seeded, a, atol=1e-12)
+    jumped = a + np.array([0.20, 0.0, 0.0])  # 0.20 m teleport
+    out = rm._limit_step("k", jumped.copy())
+    assert float(np.linalg.norm(out - a)) <= 0.05 + 1e-9          # clamped
+    np.testing.assert_allclose(out, a + np.array([0.05, 0.0, 0.0]), atol=1e-9)
+    # next frame continues to slew toward the (still far) target, 0.05 m/step
+    out2 = rm._limit_step("k", jumped.copy())
+    assert float(np.linalg.norm(out2 - out)) <= 0.05 + 1e-9
+
+    rm_off = RobotModel(_cfg())  # default max_target_step_m = 0 -> disabled
+    np.testing.assert_allclose(rm_off._limit_step("k", jumped.copy()), jumped, atol=1e-12)
+
+
 def test_config_in_repo_loads_joint_limits() -> None:
     """The shipped config (split files, merged via include) feeds robot.joint_limits
     from joint_limit.yaml into the robot section, and RobotModel picks it up."""

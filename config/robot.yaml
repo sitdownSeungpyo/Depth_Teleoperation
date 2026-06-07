@@ -22,6 +22,11 @@ robot:
     max_iters: 16        # 프레임당 반복 (워밍스타트라 보통 2~5회면 수렴)
     pos_tol: 0.002       # 수렴 허용오차 (m)
     step_clip: 0.35      # 반복당 관절 변화 상한 (rad)
+    # 비정상 점프 방어: elbow/wrist IK target 의 프레임당 이동량 상한(m).
+    # 포즈 추정이 갑자기 튀어도 endpoint 가 순간이동 못 하게 직전 근처로 clamp.
+    # 빠른 진짜 동작은 몇 프레임에 걸쳐 따라옴(slew). 0 = 끔.
+    # 너무 작으면 빠른 동작이 굼뜸 / 너무 크면 점프 통과. 0.06~0.12 권장.
+    max_target_step_m: 0.08
   arms:
     right:
       joints: [r_shoulder_pitch_joint, r_shoulder_roll_joint, r_shoulder_yaw_joint, r_elbow_joint]

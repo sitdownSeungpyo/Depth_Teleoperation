@@ -60,6 +60,14 @@ class RobotModel:
         self.frame_R = np.asarray(R, dtype=np.float64) if R is not None else np.eye(3)
 
         ik_cfg = robot_cfg.get("ik", {})
+        # Task-space target jump limiter: cap how far each arm's elbow/wrist IK
+        # TARGET may move per frame, so an abnormal pose-estimate jump can't
+        # teleport the endpoint — it gets clamped toward the last good target and
+        # a genuine fast reach slews over a few frames. 0 disables. (Redundancy /
+        # "nearest of multiple IK solutions" is already handled by warm-starting
+        # the DLS from the previous qpos, so this guards the INPUT, not the solver.)
+        self._max_target_step = float(ik_cfg.get("max_target_step_m", 0.0))
+        self._last_targets: dict[str, NDArray[np.float64]] = {}
         # Dedicated joint-limit block (rad), overrides the model's jnt_range in
         # the IK. Keyed by joint name (full or canonical); each arm's IK picks
         # the joints it actuates. Empty -> fall back to model limits.
@@ -130,9 +138,32 @@ class RobotModel:
         elo, ehi = float(arm.ik.lo[-1]), float(arm.ik.hi[-1])
         self.data.qpos[eadr] = float(np.clip(flex, elo, ehi))
         shoulder = arm.ik.body_pos(self.data, "shoulder")
-        elbow_target = shoulder + arm.upper_len * du
-        wrist_target = elbow_target + arm.lower_len * df
+        elbow_target = self._limit_step(
+            f"{side}_elbow", shoulder + arm.upper_len * du
+        )
+        wrist_target = self._limit_step(
+            f"{side}_wrist", elbow_target + arm.lower_len * df
+        )
         return arm.ik.solve(self.data, elbow_target, wrist_target)
+
+    def _limit_step(
+        self, key: str, target: NDArray[np.float64]
+    ) -> NDArray[np.float64]:
+        """Clamp a target's per-frame displacement to ``max_target_step`` (m).
+
+        Holds the endpoint near its last value when the pose estimate jumps, so an
+        abnormal frame can't teleport the arm; a sustained move slews over a few
+        frames and then tracks normally. No-op when the limiter is disabled."""
+        if self._max_target_step <= 0.0:
+            return target
+        last = self._last_targets.get(key)
+        if last is not None:
+            delta = target - last
+            dist = float(np.linalg.norm(delta))
+            if dist > self._max_target_step:
+                target = last + delta * (self._max_target_step / dist)
+        self._last_targets[key] = target
+        return target
 
     def link_lengths(self) -> dict[str, tuple[float, float]]:
         return {s: (a.upper_len, a.lower_len) for s, a in self.arms.items()}
