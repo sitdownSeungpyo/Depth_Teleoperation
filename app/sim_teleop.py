@@ -60,6 +60,8 @@ def main() -> int:
     parser.add_argument("--duration", type=float, default=None)
     parser.add_argument("--no-camera", action="store_true",
                         help="카메라 스켈레톤 창 끄기(로봇 창만)")
+    parser.add_argument("--no-filter", action="store_true",
+                        help="관절 각도 OneEuro 필터 끄기(진동 비교용; 기본은 켬)")
     args = parser.parse_args()
     logging.basicConfig(level=logging.WARNING)
 
@@ -71,7 +73,7 @@ def main() -> int:
         return 2
 
     cfg = yaml.safe_load(args.config.read_text(encoding="utf-8"))
-    from app.main import _build_tracker
+    from app.main import _build_filter, _build_tracker
 
     tracker: Any = _build_tracker(cfg, "realsense", replay=None)
     kp_cfg = cfg["filter"].get("keypoint_smoother", {})
@@ -92,7 +94,17 @@ def main() -> int:
             robot_cfg["model_path"] = str(args.model)
         rm = RobotModel(robot_cfg)
         model, data = rm.model, rm.data
+        # Joint-space OneEuro (+ velocity/position clamp) on the IK output — the
+        # numeric path wrote raw IK angles straight to qpos before, so per-frame
+        # IK noise showed up as visible jitter. Map canonical joint name -> qpos
+        # address so we can write the FILTERED angles back. (--no-filter to skip.)
+        num_filt = None if args.no_filter else _build_filter(cfg)
+        num_qadr: dict[str, int] = {}
+        for arm in rm.arms.values():
+            for n, a in zip(arm.ik.joint_names, arm.ik.qadr):
+                num_qadr[n[:-6] if n.endswith("_joint") else n] = int(a)
         print(f"IK=numeric  model={Path(robot_cfg['model_path']).name}  "
+              f"filter={'off' if args.no_filter else 'one_euro'}  "
               f"link_lengths={ {s: tuple(round(x,3) for x in v) for s,v in rm.link_lengths().items()} }",
               flush=True)
     else:
@@ -206,12 +218,25 @@ def main() -> int:
                 kp = aligned.keypoints
 
                 if drive_numeric:
+                    raw: dict[str, float] = {}
                     for side in _SIDES:
                         sh = _valid(kp, f"{side}_shoulder")
                         el = _valid(kp, f"{side}_elbow")
                         wr = _valid(kp, f"{side}_wrist")
                         if sh is not None and el is not None and wr is not None:
-                            rm.solve_arm(side, sh, el, wr)  # warm-started, mutates data
+                            sol = rm.solve_arm(side, sh, el, wr)  # warm-started, mutates data
+                            if sol:
+                                for n, val in sol.items():
+                                    raw[n[:-6] if n.endswith("_joint") else n] = val
+                    if num_filt is not None and raw:
+                        # Smooth the IK angles, then write the filtered values back
+                        # to qpos so the displayed/commanded pose is the smooth one
+                        # (and the next frame's IK warm-starts from it).
+                        cmd = num_filt(raw, timestamp=now, source_frame_ts=frame.timestamp)
+                        for cname, val in cmd.positions.items():
+                            a = num_qadr.get(cname)
+                            if a is not None:
+                                data.qpos[a] = float(val)
                     mujoco.mj_forward(model, data)
                 else:
                     if calibration is None:
