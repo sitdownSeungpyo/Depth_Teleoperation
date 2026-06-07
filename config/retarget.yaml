@@ -1,0 +1,46 @@
+# Analytic retargeter (core/retarget.py, Yi-2012). Used by --ik analytic and
+# the legacy main.py pipeline. Numeric IK uses robot.yaml instead.
+retarget:
+  robot:
+    # URDF 길이와 동기화 — 사용자 실측치로 교체
+    upper_arm_length: 0.25
+    lower_arm_length: 0.25
+    shoulder_offset: [0.0, 0.18, 0.10]
+  operator_calibration: t_pose_hold
+  fixed_arm_length: 0.55
+  calibration_frames: 30
+  # theta_1 = atan2(z,x) - theta_5 (Yi 2012 식 3). false = 논문 그대로 (-theta_5 유지).
+  # true 로 두면 -theta_5 를 제거(MediaPipe elbow 노이즈 격리용 변형)했었으나, RTMPose+
+  # 견고깊이로 elbow 키포인트가 안정되어 논문 충실 모드(false)로 복원.
+  decouple_pitch_elbow: false
+  # ===== Per-joint REST-POSE OFFSET =====
+  # 캘리브레이션 단계에서 자동 캡쳐 (default). 운영자가 calibration_frames 동안
+  # 양팔 자연스럽게 hang → 그 자세의 retargeter 출력 평균을 rest_offsets 로 사용
+  # → robot zero = 운영자 rest. 해부학적 비대칭 (오른어깨 forward 등) 자동 보정.
+  #
+  # 아래 dict 에 값을 명시하면 해당 joint 만 manual override (auto 값 무시).
+  # 모든 joint auto 사용 시 null 또는 비워둠.
+  rest_offsets: null
+  # Per-joint motion scaling — robot이 운영자 동작의 N배로 따라감.
+  # 1.0 = 그대로, 1.2 = 120% (amplify, 작은 motion도 robot이 더 크게 따라함),
+  # 0.5 = 절반. 양팔 비대칭 (왼팔 좋고 오른팔 못따라가는 경우) 보정에 사용:
+  #   r_shoulder_*: 1.2~1.5 로 올려서 오른팔 더 크게 반응시킴.
+  output_gain:
+    r_shoulder_pitch: 1.0
+    l_shoulder_pitch: 1.0
+    r_shoulder_roll: 1.0
+    l_shoulder_roll: 1.0
+    r_shoulder_yaw: 1.0
+    l_shoulder_yaw: 1.0
+    # HMR2 가 elbow 굴곡을 ~3.3배 과소평가함(정면뷰+SMPL prior 깊이 평균회귀).
+    # 운영자 90도 굽힘 → retarget elbow 동적범위 ~27도뿐. 압축비만큼 증폭해 보정.
+    # debug_elbow.py 측정 근거. 정지시 jitter 거슬리면 keypoint_smoother 강화 또는 값 ↓.
+    r_elbow: 3.0
+    l_elbow: 3.0
+    r_wrist_yaw: 1.0
+    l_wrist_yaw: 1.0
+    r_wrist_pitch: 1.0
+    l_wrist_pitch: 1.0
+    torso_yaw: 1.0
+    neck_yaw: 1.0
+    head_pitch: 1.0

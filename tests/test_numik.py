@@ -117,11 +117,11 @@ def test_config_joint_limits_override_model_and_are_enforced() -> None:
 
 
 def test_config_in_repo_loads_joint_limits() -> None:
-    """The shipped config/ubp.yaml robot.joint_limits is picked up by RobotModel."""
-    import yaml
-    from pathlib import Path
+    """The shipped config (split files, merged via include) feeds robot.joint_limits
+    from joint_limit.yaml into the robot section, and RobotModel picks it up."""
+    from core.config import load_config
 
-    cfg = yaml.safe_load(Path("config/ubp.yaml").read_text(encoding="utf-8"))
+    cfg = load_config("config/ubp.yaml")
     rm = RobotModel(dict(cfg["robot"]))
     ik = rm.arms["right"].ik
     hi = dict(zip(ik.joint_names, ik.hi))

@@ -43,8 +43,11 @@ log = logging.getLogger(__name__)
 
 
 def _load_config(path: Path) -> dict[str, Any]:
-    with path.open("r", encoding="utf-8") as f:
-        return yaml.safe_load(f)
+    # Resolves the include: list in config/ubp.yaml and deep-merges the
+    # purpose-split files (tracker/retarget/robot/filter/joint_limit/...).
+    from core.config import load_config
+
+    return load_config(path)
 
 
 def _build_publisher(cfg: dict[str, Any], publisher_kind: str) -> Any:

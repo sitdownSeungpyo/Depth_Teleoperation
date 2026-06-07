@@ -77,7 +77,8 @@ def main() -> int:
     )
     args = parser.parse_args()
 
-    cfg = yaml.safe_load(args.config.read_text(encoding="utf-8"))
+    from core.config import load_config
+    cfg = load_config(args.config)
     rs_cfg = cfg["tracker"]["realsense"]
     pose_cfg = cfg["tracker"]["pose"]
     min_visibility = float(pose_cfg["min_visibility"])

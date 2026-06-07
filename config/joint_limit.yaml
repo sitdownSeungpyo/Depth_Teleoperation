@@ -1,0 +1,43 @@
+# ============================================================================
+# JOINT LIMITS — 모든 관절 한계(rad)를 한 파일에 모음. ubp.yaml 본문에서 분리.
+# 실제 로봇 받으면 이 파일만 로봇 사양으로 채우면 됨(모델/다른 config 안 건드림).
+#
+# 두 종류의 한계가 있고 용도가 다름:
+#   robot.joint_limits      → 수치 IK(core/numik.py)가 반복마다 + 최종 커맨드에서
+#                             각 관절을 clamp. 모델 jnt_range 보다 우선.
+#   filter.mechanical_limits → 출력 필터/리미터(core/filter.py)가 명령 각도를
+#                             clamp + 속도 제한(soft_min/max = 값 × joint_limits_factor).
+# 두 블록은 각각 robot.yaml / filter.yaml 섹션에 deep-merge 되어 들어감.
+# ============================================================================
+
+# ---- 수치 IK 한계 (어깨3 + 팔꿈치, IK가 구동하는 관절만) ----
+# 어깨 pitch/roll 은 주 자유도라 넓게, shoulder_yaw(상완 트위스트)는 좁혀
+# 비정상 비틀림(DLS 여유자유도 폭주)을 막고, elbow 는 과신전 방지(0~).
+robot:
+  joint_limits:
+    r_shoulder_pitch: [-3.14, 3.14]
+    r_shoulder_roll:  [-3.14, 3.14]
+    r_shoulder_yaw:   [-1.57, 1.57]
+    r_elbow:          [0.0, 2.79]
+    l_shoulder_pitch: [-3.14, 3.14]
+    l_shoulder_roll:  [-3.14, 3.14]
+    l_shoulder_yaw:   [-1.57, 1.57]
+    l_elbow:          [0.0, 2.79]
+
+# ---- 출력 필터/리미터 기계적 한계 (14 DOF 전체, no torso_yaw) ----
+filter:
+  mechanical_limits:
+    r_shoulder_pitch: [-3.14, 3.14]
+    r_shoulder_roll:  [-3.14, 3.14]
+    r_shoulder_yaw:   [-3.14, 3.14]
+    r_elbow:          [0.0, 2.79]
+    r_wrist_yaw:      [-3.14, 3.14]
+    r_wrist_pitch:    [-1.57, 1.57]
+    l_shoulder_pitch: [-3.14, 3.14]
+    l_shoulder_roll:  [-3.14, 3.14]
+    l_shoulder_yaw:   [-3.14, 3.14]
+    l_elbow:          [0.0, 2.79]
+    l_wrist_yaw:      [-3.14, 3.14]
+    l_wrist_pitch:    [-1.57, 1.57]
+    neck_yaw:         [-1.57, 1.57]
+    head_pitch:       [-1.0, 1.0]

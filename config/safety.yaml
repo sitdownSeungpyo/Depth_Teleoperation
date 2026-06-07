@@ -1,0 +1,26 @@
+# Safety layer — deadman/e-stop, confidence/loss watchdog, ramp-to-safe pose.
+safety:
+  deadman:
+    type: keyboard
+    key: space
+  estop_key: esc
+  confidence_threshold: 0.5
+  loss_grace_period_s: 0.5
+  ramp_to_safe_s: 1.5
+  watchdog_factor: 3
+  # UBP: 모든 관절 0 rad (사용자 결정, 14 DOF)
+  safe_pose:
+    r_shoulder_pitch: 0.0
+    r_shoulder_roll: 0.0
+    r_shoulder_yaw: 0.0
+    r_elbow: 0.0
+    r_wrist_yaw: 0.0
+    r_wrist_pitch: 0.0
+    l_shoulder_pitch: 0.0
+    l_shoulder_roll: 0.0
+    l_shoulder_yaw: 0.0
+    l_elbow: 0.0
+    l_wrist_yaw: 0.0
+    l_wrist_pitch: 0.0
+    neck_yaw: 0.0
+    head_pitch: 0.0

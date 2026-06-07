@@ -197,7 +197,8 @@ def main() -> int:
     args = parser.parse_args()
     logging.basicConfig(level=logging.WARNING)
 
-    cfg = yaml.safe_load(args.config.read_text(encoding="utf-8"))
+    from core.config import load_config
+    cfg = load_config(args.config)
 
     # --- 파이프라인 컴포넌트 (main.run 과 동일 구성) ---
     from app.main import _build_filter, _build_tracker

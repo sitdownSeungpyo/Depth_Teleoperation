@@ -48,8 +48,8 @@ def record(
     duration_s: float,
     tpose: bool = False,
 ) -> int:
-    with config_path.open("r", encoding="utf-8") as f:
-        cfg = yaml.safe_load(f)
+    from core.config import load_config
+    cfg = load_config(config_path)
 
     if tracker_kind == "realsense":
         from tracker.realsense_tracker import RealSenseTracker

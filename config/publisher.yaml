@@ -1,0 +1,33 @@
+# Output publisher — sim (pybullet/mujoco) 또는 실 로봇 (dynamixel) / mock.
+publisher:
+  type: pybullet      # 또는 mujoco / dynamixel / mock
+  rate_hz: 100
+  log_path: null
+  pybullet:
+    urdf_path: ./models/ubp.urdf
+    gui: true               # GUI 창 띄움 (테스트는 false로)
+    fixed_base: true        # 토르소 고정 (지지 베이스 가정)
+    init_pose: [0.0, 0.0, 0.0]   # base_link 위치 (x, y, z)
+  mujoco:
+    model_path: ./models/ubp.xml  # MJCF native format
+    gui: true               # mujoco.viewer.launch_passive
+  dynamixel:
+    port: COM5              # PYO님 환경에 맞게 변경
+    baud: 1000000
+    # Servo ID + 모델 — 사용자 확정 후 ID 채우기 (14 DOF, no torso_yaw)
+    servos:
+      r_shoulder_pitch: {id: 1,  model: MX-64}
+      l_shoulder_pitch: {id: 2,  model: MX-64}
+      r_shoulder_roll:  {id: 3,  model: MX-64}
+      l_shoulder_roll:  {id: 4,  model: MX-64}
+      r_shoulder_yaw:   {id: 5,  model: MX-28}   # upper arm twist
+      l_shoulder_yaw:   {id: 6,  model: MX-28}
+      r_elbow:          {id: 7,  model: MX-28}
+      l_elbow:          {id: 8,  model: MX-28}
+      r_wrist_yaw:      {id: 9,  model: MX-28}   # forearm twist
+      l_wrist_yaw:      {id: 10, model: MX-28}
+      r_wrist_pitch:    {id: 11, model: XL430}
+      l_wrist_pitch:    {id: 12, model: XL430}
+      # neck_yaw + head_pitch 는 2XL430 1개 액추에이터 (축 2개, ID 2개)
+      neck_yaw:         {id: 13, model: 2XL430}
+      head_pitch:       {id: 14, model: 2XL430}

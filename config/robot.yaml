@@ -1,0 +1,35 @@
+# ===== ROBOT MODEL (numerical task-space IK) =====
+# core/robot_model.py + core/numik.py. 자료(Ryan/Jiang/OmniDP/MIRROR) 기반 표준:
+# 로봇 모델 위에서 elbow+wrist 위치를 동시에 추종하는 수치 IK (Jiang의 joint+
+# Cartesian 절충). 해석 IK(Yi 2012)의 굽힘 부정확을 제거. app.sim_teleop --ik numeric.
+#
+# ★ URDF/xacro/sdf 드롭인: 실제 로봇 받으면 아래 4개만 바꾸면 즉시 적용됨 —
+#   model_path / arms.*.{shoulder,elbow,wrist}_body / arms.*.joints / operator_to_robot_R.
+#   링크 길이·어깨 위치는 모델에서 자동 측정(임의 치수 자동 대체).
+#   - URDF: MuJoCo from_xml_path 가 직접 로드 (필요시 URDF 안에 <mujoco><compiler/> 추가).
+#   - xacro: `xacro robot.xacro > robot.urdf` 먼저 → 생성된 urdf 지정.
+#   - SDF: MuJoCo 미지원 → URDF/MJCF 로 변환 후 사용.
+#
+# 관절 한계(robot.joint_limits)는 joint_limit.yaml 에서 병합됨 (용도 분리).
+robot:
+  model_path: ./models/upperbody_sim.xml
+  # 운영자 torso 프레임(+x right,+y up,+z fwd) → 로봇 world 프레임 회전.
+  # upperbody_sim 은 root euler 로 y-up torso 를 z-up world 로: (x,y,z)→(x,-z,y).
+  # 실제 로봇 URDF 의 base 좌표계에 맞춰 이 행렬만 교체.
+  operator_to_robot_R: [[1, 0, 0], [0, 0, -1], [0, 1, 0]]
+  ik:
+    damping: 0.08        # DLS λ (m). 특이점 안정성↔수렴속도
+    max_iters: 16        # 프레임당 반복 (워밍스타트라 보통 2~5회면 수렴)
+    pos_tol: 0.002       # 수렴 허용오차 (m)
+    step_clip: 0.35      # 반복당 관절 변화 상한 (rad)
+  arms:
+    right:
+      joints: [r_shoulder_pitch_joint, r_shoulder_roll_joint, r_shoulder_yaw_joint, r_elbow_joint]
+      shoulder_body: r_shoulder_pitch_link
+      elbow_body: r_elbow_link
+      wrist_body: r_hand_link
+    left:
+      joints: [l_shoulder_pitch_joint, l_shoulder_roll_joint, l_shoulder_yaw_joint, l_elbow_joint]
+      shoulder_body: l_shoulder_pitch_link
+      elbow_body: l_elbow_link
+      wrist_body: l_hand_link

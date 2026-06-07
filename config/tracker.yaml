@@ -1,0 +1,68 @@
+# Camera / pose estimation input (tracker.py, realsense_tracker.py).
+tracker:
+  type: realsense
+  realsense:
+    color_resolution: [640, 480]
+    depth_resolution: [640, 480]
+    fps: 30
+    align_to: color
+    enable_imu: false
+    depth_max_m: 4.0
+    # 모델 선택: lite (5MB, 빠름) / full (9MB, 균형) / heavy (29MB, 정확)
+    # heavy 모델로 keypoint 위치 정확도 큰 폭 향상. 단 첫 로드 5초 추가.
+    model_asset_path: ./models/pose_landmarker_heavy.task
+    # ★ 핵심: MediaPipe의 pose_world_landmarks (3D meters, hip-centered) 사용.
+    #    false = RealSense depth + 픽셀 deproject (얇은 부위 노이즈 큼).
+    #    true = MediaPipe 3D pose model 사용 (Yi 2012의 NiTE와 유사한 접근).
+    use_world_landmarks: true
+    # Gravity-aligned aligner: 운영자의 토르소 tilt 와 무관하게 world up 으로 v 고정.
+    # 운영자가 자연스레 앞으로 살짝 기울어진 자세에서도 sh_r 과대 추정 방지.
+    # null → body-relative (head - mid_hip, 기존 동작)
+    # MediaPipe pose_world_landmarks 의 +y 가 image-down 이면 [0,-1,0], up 이면 [0,1,0].
+    # 처음 실행 후 debug_retarget 의 [AXIS] 로그 보고 결정. 일단 추정값.
+    gravity_up: [0.0, -1.0, 0.0]
+    # Body pose backend. "hmr2" (GPU, SMPL-prior 모델 3D → forward/back(z) 안정 +
+    # 가림 robust — default), "rtmpose" (GPU, rtmlib+onnxruntime, 2D + depth deproject;
+    # 얇은 부위 z 노이즈로 앞뒤 불안정), "mediapipe" (CPU, BlazePose Heavy).
+    # hmr2: scripts/install_hmr2.ps1 로 4D-Humans + 체크포인트 + SMPL_NEUTRAL.pkl 설치 필요.
+    # 다른 백엔드로 되돌리려면 이 값만 바꾸면 됨 (다른 키는 보존).
+    body_backend: rtmpose
+    # rtmpose 견고한 깊이 복원 (body_backend: rtmpose 일 때만). RealSense depth 를
+    # 제대로 활용해 elbow 압축·앞뒤 떨림 동시 해결. tracker/depth_lift.py 참고.
+    depth_lift:
+      enabled: true               # false → 레거시 3x3 median
+      window: 7                   # 깊이 샘플 창 크기(px). 얇은 팔이면 7~9 권장
+      foreground_percentile: 40   # 창 안에서 가까운 N% (몸 표면)만 채택 → 배경섞임 차단
+      max_jump_m: 0.25            # 프레임당 이보다 큰 깊이 점프는 스파이크로 보고 1프레임 보류
+      max_stale_frames: 5         # 깊이 홀일 때 직전 유효값 재사용 최대 프레임 수
+      bone_stabilize: true        # 온라인 뼈길이 정규화(shoulder→elbow→wrist) z지터 억제
+      bone_history: 60            # 뼈길이 running-median 윈도우(프레임)
+      bone_ratio_min: 0.5         # 길이 보정 비율 하한 (급변 방지)
+      bone_ratio_max: 2.0         # 길이 보정 비율 상한
+    # hmr2 backend params (body_backend: hmr2 일 때만)
+    hmr2_device: cuda             # "cuda" or "cpu" (CPU 는 unusable, >1s/frame)
+    hmr2_checkpoint_path: null    # null → load_hmr2 가 auto-download (~/.cache/4DHumans)
+    hmr2_bbox_padding: 0.15       # MediaPipe bbox 를 15% 확장 후 HMR2 에 전달
+    # rtmpose backend params (body_backend: rtmpose 일 때만). RTMPose 는 2D 만
+    # 내므로 use_world_landmarks 무시 → 항상 RealSense depth deproject 사용.
+    rtmpose_mode: balanced        # "performance" | "lightweight" | "balanced"
+    rtmpose_device: cuda          # "cuda" | "cpu" | "mps"
+    rtmpose_onnx_backend: onnxruntime  # "onnxruntime" | "opencv" | "openvino"
+
+    # Hand tracking backend. "mediapipe" (CPU, 7.5 MB, ~50% 검출률) 또는
+    # "hamer" (GPU 필수, ~1.5 GB, ~100% 검출률, MANO 라이센스 등록 필요).
+    # null/off → 손 추적 비활성 (w_yaw/w_pitch 는 0 passthrough).
+    hand_backend: mediapipe
+    # mediapipe backend params
+    hand_model_asset_path: ./models/hand_landmarker.task
+    hand_min_confidence: 0.5
+    # hamer backend params — scripts/install_hamer.ps1 로 설치 후 활성화.
+    hamer_device: cuda             # "cuda" or "cpu" (CPU 는 ~500 ms/hand, 사실상 unusable)
+    hamer_checkpoint_path: null    # null → HaMeR default (~/.cache/hamer)
+    mano_dir: null                 # null → HaMeR default (<hamer_repo>/_DATA/data/mano)
+  pose:
+    model: mediapipe_pose_lite
+    min_visibility: 0.1
+  mock:
+    jsonl_path: null
+    loop: true

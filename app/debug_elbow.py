@@ -67,7 +67,8 @@ def main() -> int:
     args = parser.parse_args()
     logging.basicConfig(level=logging.WARNING)
 
-    cfg = yaml.safe_load(args.config.read_text(encoding="utf-8"))
+    from core.config import load_config
+    cfg = load_config(args.config)
     from app.main import _build_tracker
 
     tracker: Any = _build_tracker(cfg, "realsense", replay=None)

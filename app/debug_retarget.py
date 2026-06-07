@@ -52,8 +52,8 @@ def main() -> int:
     args = parser.parse_args()
     logging.basicConfig(level=logging.WARNING)
 
-    with args.config.open("r", encoding="utf-8") as f:
-        cfg = yaml.safe_load(f)
+    from core.config import load_config
+    cfg = load_config(args.config)
 
     from app.main import _build_body_backend, _build_hand_backend
     from tracker.realsense_tracker import RealSenseTracker

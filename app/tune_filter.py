@@ -155,8 +155,8 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    with args.config.open("r", encoding="utf-8") as f:
-        cfg = yaml.safe_load(f)
+    from core.config import load_config
+    cfg = load_config(args.config)
     frames = _load_recording(args.replay)
     print(f"loaded {len(frames)} frames from {args.replay}")
     timestamps, raw_per_joint = _retarget_all(frames, cfg)

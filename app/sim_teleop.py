@@ -72,7 +72,8 @@ def main() -> int:
         print("mujoco not installed; pip install mujoco", file=sys.stderr)
         return 2
 
-    cfg = yaml.safe_load(args.config.read_text(encoding="utf-8"))
+    from core.config import load_config
+    cfg = load_config(args.config)
     from app.main import _build_filter, _build_tracker
 
     tracker: Any = _build_tracker(cfg, "realsense", replay=None)
