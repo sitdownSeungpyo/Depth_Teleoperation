@@ -37,6 +37,7 @@ from tracker.depth_lift import (
     BoneLengthStabilizer,
     RobustDepthLifter,
     SegmentConsistencyGate,
+    TemporalMedianFilter,
 )
 
 log = logging.getLogger(__name__)
@@ -131,6 +132,12 @@ class RTMPoseBodyBackend(BodyBackend):
         self._lifter: RobustDepthLifter | None = None
         self._stabilizer: BoneLengthStabilizer | None = None
         self._seg_gate: SegmentConsistencyGate | None = None
+        self._tmedian: TemporalMedianFilter | None = None
+        # Lone-frame spike killer (residual momentary jumps the segment gate
+        # misses — a 1-frame direction outlier that keeps length plausible).
+        tm_cfg = self._depth_lift_cfg.get("temporal_median", {}) or {}
+        if tm_cfg.get("enabled", True):
+            self._tmedian = TemporalMedianFilter(window=int(tm_cfg.get("window", 3)))
         # Frontal-reach fix: kinematic segment-length jump rejection. Holds a
         # limb's last good direction when a bad depth read balloons its length
         # (background bleed when pointing at the camera), preventing the "arm
@@ -255,8 +262,11 @@ class RTMPoseBodyBackend(BodyBackend):
             keypoints[name] = np.asarray(xyz, dtype=np.float64)
             confidence[name] = score
 
-        # Frontal-reach: reject bad-depth direction flips by segment-length gating
-        # FIRST (holds last good direction), then pin segment length.
+        # Kill lone-frame spikes first (temporal median), then reject bad-depth
+        # direction flips by segment-length gating (holds last good direction),
+        # then pin segment length.
+        if self._tmedian is not None:
+            keypoints = self._tmedian(keypoints)
         if self._seg_gate is not None:
             keypoints = self._seg_gate(keypoints)
         # Bone-length stabilization on the arm chain (before synthetic neck/torso,

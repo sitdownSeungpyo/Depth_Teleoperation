@@ -53,6 +53,12 @@ tracker:
       bone_history: 60            # 뼈길이 running-median 윈도우(프레임)
       bone_ratio_min: 0.5         # 길이 보정 비율 하한 (급변 방지)
       bone_ratio_max: 2.0         # 길이 보정 비율 상한
+      # 순간 튐(1프레임 outlier) 제거: per-keypoint 시간적 median (segment_gate 앞).
+      # OneEuro 저역통과는 outlier를 못 거르므로 median으로 lone spike를 직접 제거.
+      # window 클수록 더 강하게 거르지만 지연↑(3=lone, 5=2프레임 spike).
+      temporal_median:
+        enabled: true
+        window: 3
       # ★ 정면 팔 뻗기 jump 수정: 분절-길이 일관성 게이트(tracker/depth_lift.py).
       # 팔 길이는 방향과 무관하게 일정 → 배경 섞임으로 손목 z가 뒤로 튀면 길이가
       # 폭주 → 그 샘플 거부하고 직전 양호 방향 유지(뒤로 튐 방지). 정면 z의 빠른

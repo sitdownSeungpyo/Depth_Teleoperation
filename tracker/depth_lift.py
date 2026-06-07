@@ -175,6 +175,42 @@ class BoneLengthStabilizer:
         return out
 
 
+class TemporalMedianFilter:
+    """Per-keypoint causal temporal median — kills lone-frame 3D spikes.
+
+    Keeps the last ``window`` samples per keypoint and returns their per-coordinate
+    median. A single outlier frame is rejected (the median picks a good neighbor),
+    which is exactly what a low-pass like OneEuro CANNOT do — it smears the spike
+    instead of rejecting it. Genuine motion tracks with ~``window//2`` frames of
+    lag, so a small odd window (3) removes momentary jumps with minimal delay.
+
+    Targets the residual jumps the SegmentConsistencyGate misses: a one-frame
+    direction outlier (2D-keypoint jitter, or a depth error that keeps the segment
+    length plausible). Rejected (zero-vector) keypoints pass through and clear
+    their history so a recovered keypoint doesn't median against stale positions.
+    """
+
+    def __init__(self, window: int = 3) -> None:
+        self._w = max(1, window)
+        self._hist: dict[str, deque[NDArray[np.float64]]] = {}
+
+    def __call__(
+        self, keypoints: dict[str, NDArray[np.float64]]
+    ) -> dict[str, NDArray[np.float64]]:
+        out = dict(keypoints)
+        for name, pos in keypoints.items():
+            if float(np.linalg.norm(pos)) < _EPS:
+                self._hist.pop(name, None)  # rejected — reset so no stale median
+                continue
+            h = self._hist.get(name)
+            if h is None:
+                h = deque(maxlen=self._w)
+                self._hist[name] = h
+            h.append(np.asarray(pos, dtype=np.float64))
+            out[name] = np.median(np.stack(h, axis=0), axis=0)
+        return out
+
+
 class SegmentConsistencyGate:
     """Reject implausible per-frame 3D depth by gating arm-segment LENGTH.
 
