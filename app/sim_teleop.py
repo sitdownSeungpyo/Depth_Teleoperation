@@ -12,11 +12,18 @@ Two IK modes (``--ik``):
   analytic — legacy closed-form Yi-2012 IK (core.retarget). Exact for straight
             arms, ~25 deg approx when bent (paper's 3-DOF limitation).
 
+Alongside the MuJoCo robot window, a separate OpenCV camera window shows the
+operator's RealSense color image with the estimated upper-body skeleton drawn
+on it (the "pipe" overlay) — so you can watch what the camera estimates and
+what the robot does at the same time. Disable it with --no-camera.
+
 Usage:
     python -m app.sim_teleop --config .\\config\\ubp.yaml                 # numeric
     python -m app.sim_teleop --config .\\config\\ubp.yaml --ik analytic
     python -m app.sim_teleop --config .\\config\\ubp.yaml --model .\\models\\my_robot.urdf
-Viewer: drag rotate / right-drag pan / wheel zoom / close to quit.
+    python -m app.sim_teleop --config .\\config\\ubp.yaml --no-camera     # robot only
+MuJoCo viewer: drag rotate / right-drag pan / wheel zoom / close to quit.
+Camera window: 'q' or ESC to quit, 's' to save a snapshot.
 """
 
 from __future__ import annotations
@@ -51,6 +58,8 @@ def main() -> int:
     parser.add_argument("--ik", choices=("numeric", "analytic"), default="numeric")
     parser.add_argument("--model", type=Path, default=None, help="robot model 경로 override")
     parser.add_argument("--duration", type=float, default=None)
+    parser.add_argument("--no-camera", action="store_true",
+                        help="카메라 스켈레톤 창 끄기(로봇 창만)")
     args = parser.parse_args()
     logging.basicConfig(level=logging.WARNING)
 
@@ -111,11 +120,61 @@ def main() -> int:
 
     backend = (cfg["tracker"]["realsense"].get("body_backend") or "mediapipe").lower()
     print(f"body_backend={backend}  loading camera + model ...", flush=True)
+
+    # ---- optional camera skeleton window (reuses viz_teleop's drawing) ----
+    show_camera = not args.no_camera
+    cam_win = "imitation_upper camera (skeleton)  [q/ESC quit, s snapshot]"
+    snap_dir = Path("./recordings")
+    if show_camera:
+        try:
+            import cv2  # noqa: F401
+
+            from app.viz_teleop import _draw_camera_panel, _draw_detection, _hud_lines
+            snap_dir.mkdir(parents=True, exist_ok=True)
+        except ImportError as exc:
+            print(f"camera window disabled (opencv import failed: {exc})", file=sys.stderr)
+            show_camera = False
+
     tracker.start()
 
     last_ts = 0.0
     start = time.perf_counter()
     last_log = start
+
+    def pump_camera(frame: Any, now: float) -> bool:
+        """Draw + show the camera skeleton window. Returns False if the user
+        asked to quit (q/ESC). Independent of IK/alignment so it keeps showing
+        live video and the estimated skeleton even when no pose is usable."""
+        color = tracker.latest_color()
+        if color is None:
+            return True
+        color = color.copy()
+        intr = tracker.intrinsics_params
+        det = tracker.latest_detection()
+        detected = _draw_detection(color, det)
+        if frame is not None:
+            _draw_camera_panel(color, frame, intr)  # reproject skeleton ("pipe")
+        conf = frame.mean_confidence() if frame is not None else 0.0
+        _hud_lines(color, [
+            (f"{backend}  ik={args.ik}", (0, 220, 0) if detected else (0, 165, 255)),
+            (f"conf {conf:.2f}", (255, 255, 255)),
+        ])
+        h, w = color.shape[:2]
+        banner, bcol = (("BODY DETECTED", (0, 200, 0)) if detected
+                        else ("NO BODY - stand 1.5-2.5m, full torso in frame", (0, 0, 255)))
+        cv2.rectangle(color, (0, h - 28), (w, h), (0, 0, 0), -1)
+        cv2.putText(color, banner, (8, h - 8), cv2.FONT_HERSHEY_SIMPLEX,
+                    0.55, bcol, 2, cv2.LINE_AA)
+        cv2.imshow(cam_win, color)
+        key = cv2.waitKey(1) & 0xFF
+        if key in (ord("q"), 27):
+            return False
+        if key == ord("s"):
+            out = snap_dir / f"sim_teleop_{int(now)}.png"
+            cv2.imwrite(str(out), color)
+            print(f"saved {out}", flush=True)
+        return True
+
     try:
         with mj_viewer.launch_passive(model, data) as v:
             v.cam.lookat = np.array([0.1, 0.0, 1.1])
@@ -127,6 +186,12 @@ def main() -> int:
                 if args.duration is not None and now - start > args.duration:
                     break
                 frame = tracker.latest()
+
+                # Camera skeleton window — pump every iteration (all branches),
+                # so live video + estimated skeleton stay smooth and 'q' quits.
+                if show_camera and not pump_camera(frame, now):
+                    break
+
                 if frame is None or frame.timestamp == last_ts:
                     time.sleep(0.003)
                     v.sync()
@@ -184,6 +249,12 @@ def main() -> int:
                     )
     finally:
         tracker.stop()
+        if show_camera:
+            try:
+                import cv2
+                cv2.destroyAllWindows()
+            except Exception:  # noqa: BLE001
+                pass
     return 0
 
 
