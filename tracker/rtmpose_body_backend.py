@@ -36,6 +36,7 @@ from tracker.depth_lift import (
     ARM_SEGMENTS,
     BoneLengthStabilizer,
     RobustDepthLifter,
+    SegmentConsistencyGate,
 )
 
 log = logging.getLogger(__name__)
@@ -129,6 +130,20 @@ class RTMPoseBodyBackend(BodyBackend):
         self._body: Any = None
         self._lifter: RobustDepthLifter | None = None
         self._stabilizer: BoneLengthStabilizer | None = None
+        self._seg_gate: SegmentConsistencyGate | None = None
+        # Frontal-reach fix: kinematic segment-length jump rejection. Holds a
+        # limb's last good direction when a bad depth read balloons its length
+        # (background bleed when pointing at the camera), preventing the "arm
+        # flips backward then returns" jump that length-pinning alone can't stop.
+        sg_cfg = self._depth_lift_cfg.get("segment_gate", {}) or {}
+        if sg_cfg.get("enabled", True):
+            self._seg_gate = SegmentConsistencyGate(
+                ARM_SEGMENTS,
+                history=int(sg_cfg.get("history", 60)),
+                ratio_tol=float(sg_cfg.get("ratio_tol", 0.35)),
+                confirm_frames=int(sg_cfg.get("confirm_frames", 3)),
+                min_history=int(sg_cfg.get("min_history", 8)),
+            )
         if self._depth_lift_cfg.get("bone_stabilize", True):
             self._stabilizer = BoneLengthStabilizer(
                 ARM_SEGMENTS,
@@ -240,6 +255,10 @@ class RTMPoseBodyBackend(BodyBackend):
             keypoints[name] = np.asarray(xyz, dtype=np.float64)
             confidence[name] = score
 
+        # Frontal-reach: reject bad-depth direction flips by segment-length gating
+        # FIRST (holds last good direction), then pin segment length.
+        if self._seg_gate is not None:
+            keypoints = self._seg_gate(keypoints)
         # Bone-length stabilization on the arm chain (before synthetic neck/torso,
         # which derive from the more stable shoulders/hips).
         if self._stabilizer is not None:

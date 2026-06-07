@@ -175,7 +175,103 @@ class BoneLengthStabilizer:
         return out
 
 
-# Default upper-body arm chain for BoneLengthStabilizer.
+class SegmentConsistencyGate:
+    """Reject implausible per-frame 3D depth by gating arm-segment LENGTH.
+
+    An upper-arm / forearm length is ~constant regardless of pointing direction,
+    so when the operator extends the arm toward the camera the segment length
+    should stay fixed while only its direction (and the wrist's z) changes. A bad
+    depth read — background bleed at a thin / pointed-at-camera limb — instead
+    *balloons* (or collapses) the segment length. We use that as a discriminator:
+
+    - length within a ratio band of its running median  → trust it (accept).
+    - length outside the band                           → the child's depth is
+      untrusted, so HOLD the child at ``parent + last-accepted offset`` (keeping
+      the last good direction *and* length) instead of letting the arm flip
+      backward.
+
+    This is the right tool for frontal reach where the absolute-depth jump gate
+    (RobustDepthLifter.max_jump_m) is wrong: z legitimately changes fast there, so
+    a depth-delta gate fights real motion, while segment length stays invariant.
+    A short confirmation window lets a genuine scale change (operator stepping
+    closer) recover instead of being held forever. Processes parent→child so the
+    chain stays connected (uses the already-gated parent).
+    """
+
+    def __init__(
+        self,
+        segments: Iterable[tuple[str, str]],
+        history: int = 60,
+        ratio_tol: float = 0.35,
+        confirm_frames: int = 3,
+        min_history: int = 8,
+    ) -> None:
+        self._segments = list(segments)
+        self._ratio_tol = ratio_tol
+        self._confirm = max(1, confirm_frames)
+        self._min_history = max(1, min_history)
+        self._len_hist: dict[tuple[str, str], deque[float]] = {
+            seg: deque(maxlen=history) for seg in self._segments
+        }
+        self._offset: dict[tuple[str, str], NDArray[np.float64]] = {}
+        # candidate offset awaiting confirmation + how many consecutive frames.
+        self._pending: dict[tuple[str, str], tuple[NDArray[np.float64], int]] = {}
+        self._rejected = 0
+
+    @property
+    def rejected(self) -> int:
+        return self._rejected
+
+    def __call__(
+        self, keypoints: dict[str, NDArray[np.float64]]
+    ) -> dict[str, NDArray[np.float64]]:
+        out = dict(keypoints)
+        for seg in self._segments:
+            parent, child = seg
+            p = out.get(parent)
+            c = keypoints.get(child)
+            if p is None or c is None:
+                continue
+            if float(np.linalg.norm(p)) < _EPS or float(np.linalg.norm(c)) < _EPS:
+                continue  # rejected (zero-vector) keypoint — skip
+            v = c - p
+            length = float(np.linalg.norm(v))
+            if length < _EPS:
+                continue
+            hist = self._len_hist[seg]
+            if len(hist) < self._min_history:  # warm-up: seed unconditionally
+                hist.append(length)
+                self._offset[seg] = v.copy()
+                self._pending.pop(seg, None)
+                out[child] = p + v
+                continue
+            ref = float(np.median(hist))
+            if ref < _EPS or abs(length - ref) / ref <= self._ratio_tol:
+                hist.append(length)            # plausible -> accept
+                self._offset[seg] = v.copy()
+                self._pending.pop(seg, None)
+                out[child] = p + v
+                continue
+            # Implausible length: a depth spike (hold) unless several consecutive
+            # frames agree on a new value (a genuine scale change -> recover).
+            self._rejected += 1
+            pend = self._pending.get(seg)
+            if pend is not None and float(np.linalg.norm(v - pend[0])) <= self._ratio_tol * ref:
+                count = pend[1] + 1
+                if count >= self._confirm:
+                    hist.append(length)
+                    self._offset[seg] = v.copy()
+                    self._pending.pop(seg, None)
+                    out[child] = p + v       # confirmed genuine change
+                    continue
+                self._pending[seg] = (v.copy(), count)
+            else:
+                self._pending[seg] = (v.copy(), 1)
+            out[child] = p + self._offset.get(seg, v)  # hold last good offset
+        return out
+
+
+# Default upper-body arm chain for BoneLengthStabilizer / SegmentConsistencyGate.
 ARM_SEGMENTS: tuple[tuple[str, str], ...] = (
     ("left_shoulder", "left_elbow"),
     ("left_elbow", "left_wrist"),

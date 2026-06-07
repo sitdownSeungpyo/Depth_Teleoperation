@@ -53,6 +53,16 @@ tracker:
       bone_history: 60            # 뼈길이 running-median 윈도우(프레임)
       bone_ratio_min: 0.5         # 길이 보정 비율 하한 (급변 방지)
       bone_ratio_max: 2.0         # 길이 보정 비율 상한
+      # ★ 정면 팔 뻗기 jump 수정: 분절-길이 일관성 게이트(tracker/depth_lift.py).
+      # 팔 길이는 방향과 무관하게 일정 → 배경 섞임으로 손목 z가 뒤로 튀면 길이가
+      # 폭주 → 그 샘플 거부하고 직전 양호 방향 유지(뒤로 튐 방지). 정면 z의 빠른
+      # 변화와는 안 싸움(길이 불변). bone_stabilize 보다 먼저 적용.
+      segment_gate:
+        enabled: true
+        ratio_tol: 0.35           # |L−median|/median 이보다 크면 거부(작을수록 엄격)
+        confirm_frames: 3         # 새 길이가 N프레임 연속 일치하면 진짜 변화로 수용(복귀)
+        min_history: 8            # 이 프레임 수 동안은 무조건 수용(워밍업/시드)
+        history: 60               # 길이 running-median 윈도우
     # hmr2 backend params (body_backend: hmr2 일 때만)
     hmr2_device: cuda             # "cuda" or "cpu" (CPU 는 unusable, >1s/frame)
     hmr2_checkpoint_path: null    # null → load_hmr2 가 auto-download (~/.cache/4DHumans)
