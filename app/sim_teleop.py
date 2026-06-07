@@ -38,7 +38,7 @@ from typing import Any
 import numpy as np
 import yaml
 
-from core.aligner import AlignmentError, align_to_torso
+from core.aligner import AlignmentError, align_to_torso, resolve_gravity_up
 from core.filter import KeypointSmoother, OneEuroParams
 
 log = logging.getLogger(__name__)
@@ -216,7 +216,8 @@ def main() -> int:
                 last_ts = frame.timestamp
 
                 try:
-                    aligned = align_to_torso(smoother.smooth(frame), gravity_up=gravity_up)
+                    gu = resolve_gravity_up(tracker, gravity_up)  # IMU if available
+                    aligned = align_to_torso(smoother.smooth(frame), gravity_up=gu)
                 except AlignmentError:
                     v.sync()
                     continue

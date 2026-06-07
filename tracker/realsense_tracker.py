@@ -77,11 +77,32 @@ class RealSenseTracker:
         depth_max_m: float = 4.0,
         body_backend: BodyBackend | None = None,
         hand_backend: HandBackend | None = None,
+        enable_imu: bool = False,
+        gravity_lpf_alpha: float = 0.02,
+        gravity_warmup_frames: int = 10,
+        gravity_norm_tol: float = 0.30,
+        gravity_axis_sign: float = 1.0,
     ) -> None:
         self._color_resolution = color_resolution
         self._depth_resolution = depth_resolution
         self._fps = fps
         self._depth_max_m = depth_max_m
+        # IMU gravity: when enabled, the D435i accelerometer is streamed and a
+        # measured torso-up vector is produced for the aligner (replaces the
+        # hard-coded config gravity_up). Pure estimation logic in tracker.gravity.
+        self._enable_imu = bool(enable_imu)
+        self._gravity_est: Any = None
+        if self._enable_imu:
+            from tracker.gravity import GravityEstimator
+
+            self._gravity_est = GravityEstimator(
+                lpf_alpha=gravity_lpf_alpha,
+                warmup_frames=gravity_warmup_frames,
+                norm_tol=gravity_norm_tol,
+                axis_sign=gravity_axis_sign,
+            )
+        self._R_accel_optical: NDArray[np.float64] | None = None  # accel->color rot
+        self._latest_gravity_up: NDArray[np.float64] | None = None
         # Body backend produces the 11 canonical keypoints + bbox + wrist image
         # coords. MediaPipe by default; can be swapped to HMR2 for occlusion
         # robustness via config (see tracker.body_backend).
@@ -119,6 +140,9 @@ class RealSenseTracker:
             rs.stream.depth, self._depth_resolution[0], self._depth_resolution[1],
             rs.format.z16, self._fps,
         )
+        if self._enable_imu:
+            # Accelerometer only (gyro not needed for gravity-up on a static mount).
+            cfg.enable_stream(rs.stream.accel, rs.format.motion_xyz32f)
         self._rs_pipeline = rs.pipeline()
         profile = self._rs_pipeline.start(cfg)
         self._rs_align = rs.align(rs.stream.color)
@@ -132,6 +156,20 @@ class RealSenseTracker:
             float(self._intrinsics.ppx),
             float(self._intrinsics.ppy),
         )
+        if self._enable_imu:
+            # Rotation that maps an accel-frame vector into the color optical frame,
+            # so gravity comes out in the same frame as the keypoints. If anything
+            # fails (no IMU / extrinsics), degrade gracefully to the fixed vector.
+            try:
+                accel_profile = profile.get_stream(rs.stream.accel)
+                extr = accel_profile.get_extrinsics_to(color_profile)
+                self._R_accel_optical = np.array(extr.rotation, dtype=np.float64).reshape(
+                    3, 3, order="F"
+                )
+            except Exception as exc:  # noqa: BLE001
+                log.warning("IMU extrinsics unavailable (%s); disabling gravity IMU", exc)
+                self._enable_imu = False
+                self._R_accel_optical = None
 
     def _open_backends(self) -> None:
         if self._body_backend is None:
@@ -228,6 +266,25 @@ class RealSenseTracker:
             else:
                 time.sleep(0.001)
 
+    def _update_gravity(self, frames: Any) -> None:
+        """Extract one accel sample, rotate into the optical frame, feed estimator."""
+        rs = _import_realsense()
+        accel = frames.first_or_default(rs.stream.accel)
+        if not accel or self._R_accel_optical is None:
+            return
+        m = accel.as_motion_frame().get_motion_data()
+        a_sensor = np.array([m.x, m.y, m.z], dtype=np.float64)
+        a_optical = self._R_accel_optical @ a_sensor
+        up = self._gravity_est.update(a_optical)
+        if up is not None:
+            self._latest_gravity_up = up
+
+    def latest_gravity_up(self) -> NDArray[np.float64] | None:
+        """Measured torso-up vector (color optical frame), or None until the IMU
+        estimate is warmed up / when IMU is disabled. Callers fall back to the
+        fixed config gravity_up when this is None."""
+        return self._latest_gravity_up
+
     def _convert_hw_ts(self, hw_ts_ms: float) -> float:
         # RealSense gives milliseconds in its own clock; lock to perf_counter on
         # the first frame so downstream code reads a monotonic perf_counter scale.
@@ -242,6 +299,11 @@ class RealSenseTracker:
         except RuntimeError as exc:
             log.warning("RealSense wait_for_frames failed (%s); will retry", exc)
             return None
+
+        # IMU gravity: read the accelerometer from the RAW frameset (motion frames
+        # are not part of the color-aligned set) and update the gravity estimate.
+        if self._enable_imu and self._gravity_est is not None:
+            self._update_gravity(frames)
 
         aligned = self._rs_align.process(frames)
         color_frame = aligned.get_color_frame()

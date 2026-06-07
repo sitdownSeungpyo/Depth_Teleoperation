@@ -36,7 +36,7 @@ from typing import Any
 import numpy as np
 import yaml
 
-from core.aligner import AlignmentError, align_to_torso
+from core.aligner import AlignmentError, align_to_torso, resolve_gravity_up
 from core.filter import KeypointSmoother, OneEuroParams
 from core.retarget import (
     Calibration,
@@ -125,7 +125,7 @@ def main() -> int:
 
             sframe = smoother.smooth(frame)
             try:
-                aligned = align_to_torso(sframe, gravity_up=gravity_up)
+                aligned = align_to_torso(sframe, gravity_up=resolve_gravity_up(tracker, gravity_up))
             except AlignmentError:
                 continue
 
@@ -174,7 +174,7 @@ def main() -> int:
 
             # RAW (평활 전) — 같은 프레임을 smoother 거치지 않고 align.
             try:
-                aligned_raw = align_to_torso(frame, gravity_up=gravity_up)
+                aligned_raw = align_to_torso(frame, gravity_up=resolve_gravity_up(tracker, gravity_up))
                 c_raw, flex_raw, th5_raw = _geom(aligned_raw)
             except AlignmentError:
                 c_raw = flex_raw = th5_raw = float("nan")

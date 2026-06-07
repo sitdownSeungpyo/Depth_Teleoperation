@@ -6,8 +6,19 @@ tracker:
     depth_resolution: [640, 480]
     fps: 30
     align_to: color
-    enable_imu: false
     depth_max_m: 4.0
+    # ===== IMU gravity alignment (D435i Motion Module) =====
+    # true → 가속도계로 실제 중력을 측정해 aligner 의 up 벡터(gravity_up)를 대체.
+    # 운영자 토르소 tilt 와 무관하게 진짜 수직 기준 → 정면 팔 뻗기 어깨각 안정화.
+    # ★ 하드웨어 실측 검증 후 켜세요: `python -m app.debug_imu --config .\config\ubp.yaml`
+    #   로 측정 up 벡터가 아래(-y)를 향하고 tilt 가 맞는지 확인. 부호가 반대면
+    #   imu.axis_sign: -1.0. IMU 미연결/실패 시 자동으로 아래 gravity_up 폴백.
+    enable_imu: false
+    imu:
+      lpf_alpha: 0.02        # 가속도 EMA 평활(작을수록 부드럽고 재거치 반영 느림)
+      warmup_frames: 10      # 이 샘플 수 누적 전엔 fixed gravity_up 폴백
+      norm_tol: 0.30         # |‖a‖−g|/g 가 이보다 크면(흔들림/이동) 그 샘플 거부
+      axis_sign: 1.0         # 측정 up 부호 뒤집힘 시 -1.0 (실측 확인)
     # 모델 선택: lite (5MB, 빠름) / full (9MB, 균형) / heavy (29MB, 정확)
     # heavy 모델로 keypoint 위치 정확도 큰 폭 향상. 단 첫 로드 5초 추가.
     model_asset_path: ./models/pose_landmarker_heavy.task

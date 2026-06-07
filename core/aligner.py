@@ -12,6 +12,7 @@ References
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Any
 
 import numpy as np
 from numpy.typing import NDArray
@@ -64,6 +65,23 @@ def _rpy_from_rotation(r: NDArray[np.float64]) -> tuple[float, float, float]:
         roll = float(np.arctan2(r[1, 0], r[1, 1]))
         yaw = float(np.arctan2(r[0, 2], r[2, 2]))
     return roll, pitch, yaw
+
+
+def resolve_gravity_up(
+    tracker: Any, fixed: NDArray[np.float64] | None
+) -> NDArray[np.float64] | None:
+    """Prefer the tracker's IMU-measured gravity-up over the fixed config vector.
+
+    Returns the measured up (color optical frame) when the tracker exposes one
+    and it's warmed up, else the fixed config vector (or None). Safe for any
+    tracker — trackers without an IMU just don't have ``latest_gravity_up``.
+    """
+    getter = getattr(tracker, "latest_gravity_up", None)
+    if getter is not None:
+        measured = getter()
+        if measured is not None:
+            return measured
+    return fixed
 
 
 def align_to_torso(

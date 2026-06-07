@@ -29,7 +29,7 @@ from typing import Any
 import numpy as np
 import yaml
 
-from core.aligner import AlignmentError, align_to_torso
+from core.aligner import AlignmentError, align_to_torso, resolve_gravity_up
 from core.filter import KeypointSmoother, OneEuroParams
 from core.retarget import (
     Calibration,
@@ -59,6 +59,7 @@ def main() -> int:
     from tracker.realsense_tracker import RealSenseTracker
 
     rs_cfg = cfg["tracker"]["realsense"]
+    imu_cfg = rs_cfg.get("imu", {}) or {}
     tracker: Any = RealSenseTracker(
         color_resolution=tuple(rs_cfg["color_resolution"]),
         depth_resolution=tuple(rs_cfg["depth_resolution"]),
@@ -66,6 +67,11 @@ def main() -> int:
         depth_max_m=float(rs_cfg["depth_max_m"]),
         body_backend=_build_body_backend(rs_cfg, cfg["tracker"]["pose"]),
         hand_backend=_build_hand_backend(rs_cfg),
+        enable_imu=bool(rs_cfg.get("enable_imu", False)),
+        gravity_lpf_alpha=float(imu_cfg.get("lpf_alpha", 0.02)),
+        gravity_warmup_frames=int(imu_cfg.get("warmup_frames", 10)),
+        gravity_norm_tol=float(imu_cfg.get("norm_tol", 0.30)),
+        gravity_axis_sign=float(imu_cfg.get("axis_sign", 1.0)),
     )
 
     robot_cfg = cfg["retarget"]["robot"]
@@ -147,7 +153,7 @@ def main() -> int:
             if smoother is not None:
                 frame = smoother.smooth(frame)
             try:
-                aligned = align_to_torso(frame, gravity_up=gravity_up)
+                aligned = align_to_torso(frame, gravity_up=resolve_gravity_up(tracker, gravity_up))
             except AlignmentError:
                 print(f"[{now-start:6.2f}s]   ---      --- |   ---      --- | "
                       f"{r_elb_z:>9} | {conf:.2f} align=NOFRAME (r_elb_conf={r_elb_conf:.2f})",

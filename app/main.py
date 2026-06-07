@@ -17,7 +17,7 @@ from typing import Any
 import numpy as np
 import yaml
 
-from core.aligner import AlignmentError, align_to_torso
+from core.aligner import AlignmentError, align_to_torso, resolve_gravity_up
 from core.filter import (
     FilterAndLimiter,
     JointLimits,
@@ -198,6 +198,7 @@ def _build_tracker(cfg: dict[str, Any], tracker_kind: str, replay: Path | None) 
         rs_cfg = cfg["tracker"]["realsense"]
         body_backend = _build_body_backend(rs_cfg, cfg["tracker"]["pose"])
         hand_backend = _build_hand_backend(rs_cfg)
+        imu_cfg = rs_cfg.get("imu", {}) or {}
         return RealSenseTracker(
             color_resolution=tuple(rs_cfg["color_resolution"]),
             depth_resolution=tuple(rs_cfg["depth_resolution"]),
@@ -205,6 +206,11 @@ def _build_tracker(cfg: dict[str, Any], tracker_kind: str, replay: Path | None) 
             depth_max_m=float(rs_cfg["depth_max_m"]),
             body_backend=body_backend,
             hand_backend=hand_backend,
+            enable_imu=bool(rs_cfg.get("enable_imu", False)),
+            gravity_lpf_alpha=float(imu_cfg.get("lpf_alpha", 0.02)),
+            gravity_warmup_frames=int(imu_cfg.get("warmup_frames", 10)),
+            gravity_norm_tol=float(imu_cfg.get("norm_tol", 0.30)),
+            gravity_axis_sign=float(imu_cfg.get("axis_sign", 1.0)),
         )
     raise ValueError(f"unknown tracker: {tracker_kind}")
 
@@ -349,7 +355,8 @@ def run(
             # Smooth keypoints BEFORE alignment + IK (singularity 노이즈 억제)
             frame = kp_smoother.smooth(frame)
             try:
-                aligned = align_to_torso(frame, gravity_up=gravity_up)
+                gu = resolve_gravity_up(tracker, gravity_up)  # IMU if available
+                aligned = align_to_torso(frame, gravity_up=gu)
             except AlignmentError as exc:
                 log.warning("aligner skipped frame: %s", exc)
                 safety.note_alive()

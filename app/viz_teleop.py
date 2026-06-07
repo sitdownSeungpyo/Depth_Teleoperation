@@ -35,7 +35,7 @@ import cv2
 import numpy as np
 import yaml
 
-from core.aligner import AlignmentError, align_to_torso
+from core.aligner import AlignmentError, align_to_torso, resolve_gravity_up
 from core.filter import KeypointSmoother, OneEuroParams
 from core.retarget import (
     Calibration,
@@ -286,7 +286,8 @@ def main() -> int:
 
                 sframe = smoother.smooth(frame)
                 try:
-                    aligned = align_to_torso(sframe, gravity_up=gravity_up)
+                    gu = resolve_gravity_up(tracker, gravity_up)  # IMU if available
+                    aligned = align_to_torso(sframe, gravity_up=gu)
                     if calibration is None:
                         collector.push(aligned)
                         if collector.ready():
