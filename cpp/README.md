@@ -70,6 +70,6 @@ ctest --preset ninja-release
 
 - [x] build scaffolding (CMake/Ninja/vcpkg)
 - [x] core pure algorithm (types/config/filter/gravity/aligner/depth_lift/retarget/safety) + golden tests
-- [ ] numIK + robot_model (MuJoCo C API)
+- [x] numIK + robot_model (MuJoCo C API) + golden test (`-DITU_BUILD_NUMIK=ON -DMUJOCO_DIR=<sdk>`)
 - [ ] device + publishers + RTMPose ONNX + Python sidecar
 - [ ] app main loop

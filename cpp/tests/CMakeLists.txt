@@ -20,5 +20,15 @@ target_link_libraries(itu_tests PRIVATE
 target_compile_definitions(itu_tests PRIVATE
   GOLDEN_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/golden/data")
 
+if(ITU_BUILD_NUMIK)
+  target_sources(itu_tests PRIVATE test_numik.cpp)
+  target_link_libraries(itu_tests PRIVATE itu_numik)
+  target_compile_definitions(itu_tests PRIVATE ITU_HAVE_NUMIK=1)
+  # MuJoCo is a DLL — copy it next to the test exe so it loads at runtime.
+  add_custom_command(TARGET itu_tests POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "${MUJOCO_DIR}/bin/mujoco.dll" "$<TARGET_FILE_DIR:itu_tests>")
+endif()
+
 include(GoogleTest)
 gtest_discover_tests(itu_tests)

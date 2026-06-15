@@ -47,6 +47,26 @@ add_library(itu_core
 target_include_directories(itu_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 target_link_libraries(itu_core PUBLIC Eigen3::Eigen yaml-cpp::yaml-cpp)
 
+# ---- numik library: numerical IK on the robot model (needs MuJoCo) ----
+if(ITU_BUILD_NUMIK)
+  if(NOT MUJOCO_DIR AND DEFINED ENV{MUJOCO_DIR})
+    set(MUJOCO_DIR "$ENV{MUJOCO_DIR}")
+  endif()
+  if(NOT MUJOCO_DIR OR NOT EXISTS "${MUJOCO_DIR}/include/mujoco/mujoco.h")
+    message(FATAL_ERROR
+      "ITU_BUILD_NUMIK=ON needs a MuJoCo SDK. Set -DMUJOCO_DIR=<sdk> (with "
+      "include/ lib/ bin/) or the MUJOCO_DIR env var. Got: '${MUJOCO_DIR}'")
+  endif()
+  add_library(mujoco_imported SHARED IMPORTED GLOBAL)
+  set_target_properties(mujoco_imported PROPERTIES
+    IMPORTED_IMPLIB "${MUJOCO_DIR}/lib/mujoco.lib"
+    IMPORTED_LOCATION "${MUJOCO_DIR}/bin/mujoco.dll"
+    INTERFACE_INCLUDE_DIRECTORIES "${MUJOCO_DIR}/include")
+  add_library(itu_numik src/numik.cpp src/robot_model.cpp)
+  target_include_directories(itu_numik PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
+  target_link_libraries(itu_numik PUBLIC itu_core Eigen3::Eigen mujoco_imported)
+endif()
+
 if(ITU_BUILD_TESTS)
   enable_testing()
   add_subdirectory(tests)

@@ -186,6 +186,57 @@ def gen_retarget() -> list:
     return cases
 
 
+def gen_numik() -> dict:
+    """Numerical IK on the real robot model. Needs `mujoco` installed; the model
+    + arm config come from config/ubp.yaml so C++ replays the identical setup."""
+    from core.config import load_config
+    from core.robot_model import RobotModel
+
+    cfg = load_config(ROOT / "config" / "ubp.yaml")
+    rc = dict(cfg["robot"])
+    rc["model_path"] = str((ROOT / rc["model_path"]).resolve())  # absolutize for both sides
+    rm = RobotModel(rc)
+
+    # Operator points in the torso frame (+x right, +y up, +z fwd). Right side is
+    # -x, left is +x. Magnitudes are irrelevant (solve_arm uses directions + the
+    # robot's own link lengths), but the sequence matters (warm-start).
+    poses = [
+        ("right", [-0.18, 0.0, 0.0], [-0.18, -0.26, 0.0], [-0.18, -0.52, 0.0]),   # hang
+        ("right", [-0.18, 0.0, 0.0], [-0.18, 0.0, 0.26], [-0.18, 0.0, 0.52]),     # reach fwd
+        ("right", [-0.18, 0.0, 0.0], [-0.18, -0.26, 0.0], [-0.18, -0.26, 0.26]),  # bent
+        ("left", [0.18, 0.0, 0.0], [0.18, -0.26, 0.0], [0.18, -0.52, 0.0]),
+        ("left", [0.18, 0.0, 0.0], [0.18, 0.0, 0.26], [0.18, 0.0, 0.52]),
+        ("left", [0.18, 0.0, 0.0], [0.18, -0.26, 0.0], [0.18, -0.26, 0.26]),
+    ]
+    calls = []
+    for side, sh, el, wr in poses:
+        sol = rm.solve_arm(side, np.array(sh), np.array(el), np.array(wr))
+        calls.append({
+            "side": side, "shoulder": sh, "elbow": el, "wrist": wr,
+            "expected": (None if sol is None else {k: float(v) for k, v in sol.items()}),
+        })
+
+    ik = rc.get("ik", {})
+    return {
+        "config": {
+            "model_path": rc["model_path"],
+            "operator_to_robot_R": rc.get("operator_to_robot_R", [[1, 0, 0], [0, 1, 0], [0, 0, 1]]),
+            "ik": {
+                "damping": float(ik.get("damping", 0.08)),
+                "max_iters": int(ik.get("max_iters", 16)),
+                "pos_tol": float(ik.get("pos_tol", 2e-3)),
+                "step_clip": float(ik.get("step_clip", 0.35)),
+                "max_target_step_m": float(ik.get("max_target_step_m", 0.0)),
+            },
+            "joint_limits": {k: [float(v[0]), float(v[1])]
+                             for k, v in (rc.get("joint_limits") or {}).items()},
+            "arms": rc["arms"],
+        },
+        "link_lengths": {s: [float(v[0]), float(v[1])] for s, v in rm.link_lengths().items()},
+        "calls": calls,
+    }
+
+
 def main() -> int:
     OUT.mkdir(parents=True, exist_ok=True)
     data = {
@@ -195,6 +246,11 @@ def main() -> int:
         "aligner.json": gen_aligner(),
         "retarget.json": gen_retarget(),
     }
+    # numik needs the optional `mujoco` dependency; skip cleanly if unavailable.
+    try:
+        data["numik.json"] = gen_numik()
+    except Exception as exc:  # noqa: BLE001
+        print(f"skipping numik golden (mujoco unavailable?): {exc}")
     for fname, payload in data.items():
         (OUT / fname).write_text(json.dumps(payload, indent=2), encoding="utf-8")
         print(f"wrote {OUT / fname}")
