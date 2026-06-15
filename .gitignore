@@ -18,3 +18,9 @@ models/*.task
 third_party/
 # Large third-party model weights (SMPL neutral body ~247 MB) fetched by install scripts
 data/
+# ---- C++ port (cpp/) ----
+cpp/build/
+cpp/vcpkg_installed/
+# Generated golden reference data (reproduce with cpp/tools/golden/gen_golden.py).
+# Kept out of VCS so it can never drift from the Python reference silently.
+cpp/tests/golden/data/*.json

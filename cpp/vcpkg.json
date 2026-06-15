@@ -1,0 +1,29 @@
+{
+  "name": "imitation-upper-cpp",
+  "version": "0.1.0",
+  "description": "C++ port of the RealSense D435i upper-body teleoperation controller",
+  "dependencies": [
+    "eigen3",
+    "yaml-cpp",
+    "nlohmann-json",
+    {
+      "name": "gtest",
+      "platform": "!android"
+    }
+  ],
+  "features": {
+    "device": {
+      "description": "RealSense capture + OpenCV visualization",
+      "dependencies": [
+        "opencv4",
+        "realsense2"
+      ]
+    },
+    "bullet": {
+      "description": "Bullet sim publisher",
+      "dependencies": [
+        "bullet3"
+      ]
+    }
+  }
+}

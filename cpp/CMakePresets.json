@@ -1,0 +1,43 @@
+{
+  "version": 3,
+  "cmakeMinimumRequired": { "major": 3, "minor": 24, "patch": 0 },
+  "configurePresets": [
+    {
+      "name": "ninja-base",
+      "hidden": true,
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/${presetName}",
+      "cacheVariables": {
+        "CMAKE_TOOLCHAIN_FILE": "$env{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake"
+      }
+    },
+    {
+      "name": "ninja-release",
+      "inherits": "ninja-base",
+      "displayName": "Ninja Release",
+      "cacheVariables": { "CMAKE_BUILD_TYPE": "Release" }
+    },
+    {
+      "name": "ninja-debug",
+      "inherits": "ninja-base",
+      "displayName": "Ninja Debug",
+      "cacheVariables": { "CMAKE_BUILD_TYPE": "Debug" }
+    }
+  ],
+  "buildPresets": [
+    { "name": "ninja-release", "configurePreset": "ninja-release" },
+    { "name": "ninja-debug", "configurePreset": "ninja-debug" }
+  ],
+  "testPresets": [
+    {
+      "name": "ninja-release",
+      "configurePreset": "ninja-release",
+      "output": { "outputOnFailure": true }
+    },
+    {
+      "name": "ninja-debug",
+      "configurePreset": "ninja-debug",
+      "output": { "outputOnFailure": true }
+    }
+  ]
+}
