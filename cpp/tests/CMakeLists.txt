@@ -9,9 +9,11 @@ add_executable(itu_tests
   test_aligner.cpp
   test_retarget.cpp
   test_depth_lift.cpp
+  test_publisher.cpp
 )
 target_link_libraries(itu_tests PRIVATE
   itu_core
+  itu_publisher
   GTest::gtest
   GTest::gtest_main
   nlohmann_json::nlohmann_json

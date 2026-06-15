@@ -71,5 +71,7 @@ ctest --preset ninja-release
 - [x] build scaffolding (CMake/Ninja/vcpkg)
 - [x] core pure algorithm (types/config/filter/gravity/aligner/depth_lift/retarget/safety) + golden tests
 - [x] numIK + robot_model (MuJoCo C API) + golden test (`-DITU_BUILD_NUMIK=ON -DMUJOCO_DIR=<sdk>`)
-- [ ] device + publishers + RTMPose ONNX + Python sidecar
+- [x] publishers — interpolating base + mock + udp + Dynamixel rad→unit + MuJoCo (headless) + golden tests
+- [ ] remaining publishers — Dynamixel SDK driver, PyBullet, MuJoCo GLFW viewer (device/app phase)
+- [ ] device layer (librealsense capture / OpenCV) + Python sidecar (RTMPose ONNX)
 - [ ] app main loop

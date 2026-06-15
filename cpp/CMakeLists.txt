@@ -47,6 +47,18 @@ add_library(itu_core
 target_include_directories(itu_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 target_link_libraries(itu_core PUBLIC Eigen3::Eigen yaml-cpp::yaml-cpp)
 
+# ---- publisher library: interpolating base + mock + udp (no heavy deps) ----
+add_library(itu_publisher
+  src/interpolating_publisher.cpp
+  src/mock_publisher.cpp
+  src/udp_publisher.cpp
+)
+target_include_directories(itu_publisher PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
+target_link_libraries(itu_publisher PUBLIC itu_core)
+if(WIN32)
+  target_link_libraries(itu_publisher PUBLIC ws2_32 winmm)
+endif()
+
 # ---- numik library: numerical IK on the robot model (needs MuJoCo) ----
 if(ITU_BUILD_NUMIK)
   if(NOT MUJOCO_DIR AND DEFINED ENV{MUJOCO_DIR})
@@ -62,9 +74,9 @@ if(ITU_BUILD_NUMIK)
     IMPORTED_IMPLIB "${MUJOCO_DIR}/lib/mujoco.lib"
     IMPORTED_LOCATION "${MUJOCO_DIR}/bin/mujoco.dll"
     INTERFACE_INCLUDE_DIRECTORIES "${MUJOCO_DIR}/include")
-  add_library(itu_numik src/numik.cpp src/robot_model.cpp)
+  add_library(itu_numik src/numik.cpp src/robot_model.cpp src/mujoco_publisher.cpp)
   target_include_directories(itu_numik PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
-  target_link_libraries(itu_numik PUBLIC itu_core Eigen3::Eigen mujoco_imported)
+  target_link_libraries(itu_numik PUBLIC itu_core itu_publisher Eigen3::Eigen mujoco_imported)
 endif()
 
 if(ITU_BUILD_TESTS)

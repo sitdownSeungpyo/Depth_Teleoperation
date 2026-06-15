@@ -237,6 +237,46 @@ def gen_numik() -> dict:
     }
 
 
+def _cmd_json(c) -> dict:
+    return {"timestamp": float(c.timestamp), "source_frame_ts": float(c.source_frame_ts),
+            "positions": {k: float(v) for k, v in c.positions.items()}}
+
+
+def gen_publisher() -> dict:
+    """InterpolatingPublisherBase._interpolate + Dynamixel rad->unit conversion."""
+    from core.types import JointCommand
+    from publisher.dynamixel_publisher import angle_rad_to_dxl_unit
+    from publisher.mock_publisher import MockPublisher
+
+    a = JointCommand(timestamp=0.0, positions={"j1": 0.0, "j2": 1.0}, source_frame_ts=0.0)
+    b = JointCommand(timestamp=0.1, positions={"j1": 1.0, "j2": -1.0, "j3": 0.5},
+                     source_frame_ts=0.05)
+    mp = MockPublisher()
+    mp.set_target(a)
+    mp.set_target(b)
+    nows = [0.0, 0.05, 0.1, 0.4]  # last one is stale (age 0.3 > 0.2) -> hold b
+    interp = []
+    for now in nows:
+        c = mp._interpolate(now)  # noqa: SLF001 (pinning the reference behaviour)
+        interp.append(None if c is None else _cmd_json(c))
+
+    mp1 = MockPublisher()
+    mp1.set_target(a)  # single setpoint -> prev is next -> hold a
+    single = _cmd_json(mp1._interpolate(0.2))  # noqa: SLF001
+
+    angles = [0.0, 1.5707963267948966, -1.5707963267948966, 3.14159, -3.14159, 0.5, 10.0, -10.0]
+    dxl = [{"angle": ang, "unit": int(angle_rad_to_dxl_unit(ang))} for ang in angles]
+
+    return {
+        "cmdA": _cmd_json(a),
+        "cmdB": _cmd_json(b),
+        "nows": nows,
+        "interp": interp,
+        "single": {"cmd": _cmd_json(a), "now": 0.2, "expected": single},
+        "dxl": dxl,
+    }
+
+
 def main() -> int:
     OUT.mkdir(parents=True, exist_ok=True)
     data = {
@@ -245,6 +285,7 @@ def main() -> int:
         "gravity.json": gen_gravity(),
         "aligner.json": gen_aligner(),
         "retarget.json": gen_retarget(),
+        "publisher.json": gen_publisher(),
     }
     # numik needs the optional `mujoco` dependency; skip cleanly if unavailable.
     try:
