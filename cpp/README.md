@@ -1,72 +1,75 @@
-# imitation_upper (C++) — RealSense D435i 상반신 텔레오퍼레이션
+# imitation_upper (C++) — RealSense D435i upper-body teleoperation
 
-Python 구현(`../`)의 C++ 포팅. **경계 원칙**: 포팅 가능한 모든 것은 C++로,
-신경망 forward pass(RTMPose/MediaPipe/HMR2/HaMeR)만 Python 사이드카로 남긴다.
+A C++ port of the Python implementation (`../`). **Boundary principle**:
+everything portable goes to C++; only the neural-net forward pass
+(RTMPose/MediaPipe/HMR2/HaMeR) stays in a Python sidecar.
 
 ```
-C++ (이 디렉토리)                          Python 사이드카 (../python_sidecar)
+C++ (this directory)                       Python sidecar (../python_sidecar)
   RealSense capture (librealsense)           RGB → 2D pixel keypoints + score
   depth_lift · aligner · retarget · numik      (RTMPose / MediaPipe / HMR2 / HaMeR)
   filter · safety · publishers
 ```
 
-## 빌드 (CMake + Ninja)
+## Build (CMake + Ninja)
 
-요구 도구:
+Required tools:
 - CMake ≥ 3.24, **Ninja**
 - MSVC (Visual Studio 2022 Build Tools) — Windows
-- vcpkg (의존성 매니페스트 모드)
+- vcpkg (manifest mode)
 
 ```powershell
-# vcpkg 부트스트랩 (한 번)
+# bootstrap vcpkg (once)
 git clone https://github.com/microsoft/vcpkg $env:USERPROFILE\vcpkg
 & "$env:USERPROFILE\vcpkg\bootstrap-vcpkg.bat"
 $env:VCPKG_ROOT = "$env:USERPROFILE\vcpkg"
 
-# 구성 + 빌드 (Ninja)
+# configure + build (Ninja)
 cmake --preset ninja-release
 cmake --build --preset ninja-release
 
-# 테스트
+# test
 ctest --preset ninja-release --output-on-failure
 ```
 
-## 의존성 출처
+## Dependency sources
 
-| 라이브러리 | 출처 | 용도 |
+| Library | Source | Use |
 |---|---|---|
-| Eigen3 | vcpkg `eigen3` | 선형대수 (numpy 대체) |
-| yaml-cpp | vcpkg `yaml-cpp` | config 로드 (pyyaml 대체) |
-| nlohmann-json | vcpkg `nlohmann-json` | 골든 테스트 데이터 I/O |
-| GoogleTest | vcpkg `gtest` | 단위/골든 테스트 |
-| OpenCV | vcpkg `opencv4` | 영상 처리/시각화 |
+| Eigen3 | vcpkg `eigen3` | linear algebra (replaces numpy) |
+| yaml-cpp | vcpkg `yaml-cpp` | config loading (replaces pyyaml) |
+| nlohmann-json | vcpkg `nlohmann-json` | golden-test data I/O |
+| GoogleTest | vcpkg `gtest` | unit / golden tests |
+| OpenCV | vcpkg `opencv4` | image processing / visualization |
 | librealsense2 | vcpkg `realsense2` | D435i color/depth/IMU |
-| Bullet | vcpkg `bullet3` | sim publisher (옵션) |
-| ONNX Runtime | **수동** (vcpkg 빈약) — onnxruntime-gpu 릴리스 | RTMPose C++ 추론 (후속) |
-| MuJoCo | **수동** (공식 릴리스 zip) | numIK 백본 (후속) |
-| DynamixelSDK | **수동** (git submodule) | 실 로봇 서보 (후속) |
+| Bullet | vcpkg `bullet3` | sim publisher (optional) |
+| ONNX Runtime | **manual** (vcpkg support is thin) — onnxruntime-gpu release | RTMPose C++ inference (later) |
+| MuJoCo | **manual** (official release zip) | numIK backbone (later) |
+| DynamixelSDK | **manual** (git submodule) | real-robot servos (later) |
 
-MuJoCo/ONNXRuntime/DynamixelSDK는 vcpkg에 없거나 빈약해서 `cmake/Find*.cmake`
-+ 환경변수(`MUJOCO_DIR`, `ONNXRUNTIME_DIR`)로 잡는다. 해당 모듈(numik/rtmpose/
-dynamixel)은 옵션 빌드 플래그로 끌 수 있어, 순수 알고리즘 코어는 위 vcpkg 패키지만
-으로 빌드/테스트된다.
+MuJoCo / ONNXRuntime / DynamixelSDK are absent or thin in vcpkg, so they are
+located via `cmake/Find*.cmake` + environment variables (`MUJOCO_DIR`,
+`ONNXRUNTIME_DIR`). Those modules (numik / rtmpose / dynamixel) are behind
+optional build flags, so the pure-algorithm core builds and tests with only the
+vcpkg base packages above.
 
-## 골든 테스트 (C++ == Python 수치 일치)
+## Golden tests (C++ == Python numeric equality)
 
-Python 레퍼런스 출력을 JSON으로 덤프하고 C++ 테스트가 그것과 일치하는지 검증한다.
+Dump the Python reference output to JSON, then have the C++ tests assert they
+match.
 
 ```powershell
-# 1) 사용자의 3.11 venv 에서 골든 데이터 생성 (제 환경 의존 X)
+# 1) generate golden data in your 3.11 venv (independent of this machine)
 python tools\golden\gen_golden.py        # -> tests/golden/data/*.json
 
-# 2) C++ 테스트가 그 JSON 을 읽어 비교
+# 2) C++ tests read that JSON and compare
 ctest --preset ninja-release
 ```
 
-## 진행 상태
+## Progress
 
-- [x] 빌드 스캐폴딩 (CMake/Ninja/vcpkg)
-- [ ] 코어 순수 알고리즘 (types/config/filter/gravity/aligner/depth_lift/retarget/safety)
+- [x] build scaffolding (CMake/Ninja/vcpkg)
+- [x] core pure algorithm (types/config/filter/gravity/aligner/depth_lift/retarget/safety) + golden tests
 - [ ] numIK + robot_model (MuJoCo C API)
-- [ ] device + publishers + RTMPose ONNX + Python 사이드카
-- [ ] app 메인 루프
+- [ ] device + publishers + RTMPose ONNX + Python sidecar
+- [ ] app main loop
