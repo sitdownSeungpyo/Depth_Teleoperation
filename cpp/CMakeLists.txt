@@ -9,6 +9,12 @@ if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
   set(CMAKE_BUILD_TYPE Release CACHE STRING "" FORCE)
 endif()
 
+if(MSVC)
+  # /utf-8: sources carry UTF-8 comments (λ, ≤, →, π ...); without this MSVC warns
+  #         C4819 on non-UTF-8 locales (e.g. cp949). /EHsc: standard C++ unwind.
+  add_compile_options(/utf-8 /EHsc)
+endif()
+
 # Optional feature modules. The pure-algorithm core builds with only the
 # vcpkg base deps (Eigen/yaml-cpp); device / IK / inference modules need
 # external SDKs (MuJoCo, ONNXRuntime, librealsense, DynamixelSDK) and are

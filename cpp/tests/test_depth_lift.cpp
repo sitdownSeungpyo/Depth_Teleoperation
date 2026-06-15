@@ -16,14 +16,17 @@ DepthImageView make_view(std::vector<std::uint16_t>& buf, int w, int h) {
 
 TEST(DepthLift, ForegroundDepthPicksNearCluster) {
   const int w = 5, h = 5;
-  // Center 3x3 = near body (1000 units), surround = far background (3000).
+  // Center 3x3 = near body (1000 units, 9 px = 36%), surround = far background
+  // (3000, 16 px). The foreground percentile must sit below the near fraction to
+  // isolate the body: at p=30 the threshold lands in the near cluster, so the
+  // result is the body depth (1.0 m) — whereas a plain median would return the
+  // far background (3.0 m). That contrast is exactly what foreground_depth fixes.
   std::vector<std::uint16_t> buf(w * h, 3000);
   for (int y = 1; y <= 3; ++y)
     for (int x = 1; x <= 3; ++x) buf[y * w + x] = 1000;
   DepthImageView view = make_view(buf, w, h);
-  // window 5 covers the whole frame; foreground percentile keeps the near cluster.
-  const double d = foreground_depth(view, 2, 2, 5, 40.0, 0.001, 4.0);
-  EXPECT_NEAR(d, 1.0, 1e-9);  // 1000 * 0.001 m
+  const double d = foreground_depth(view, 2, 2, 5, 30.0, 0.001, 4.0);
+  EXPECT_NEAR(d, 1.0, 1e-9);  // 1000 * 0.001 m (near cluster, background rejected)
 }
 
 TEST(DepthLift, ForegroundDepthZeroWhenAllInvalid) {
