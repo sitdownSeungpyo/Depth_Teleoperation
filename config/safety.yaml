@@ -8,6 +8,11 @@ safety:
   loss_grace_period_s: 0.5
   ramp_to_safe_s: 1.5
   watchdog_factor: 3
+  # 메인 루프가 이 시간 동안 명령을 못 보내면 E-stop (별도 스레드에서 감시).
+  # null 이면 loop 주기 * watchdog_factor 로 유도되는데, 60 Hz 에서 50 ms 라
+  # 30 fps 카메라의 정상 지터에도 걸림 → 명시값 사용 권장.
+  # 카메라 프레임 간격(33 ms)의 여유 배수. 늘리면 정지 감지가 늦고, 줄이면 오탐.
+  watchdog_timeout_s: 0.5
   # UBP: 모든 관절 0 rad (사용자 결정, 14 DOF)
   safe_pose:
     r_shoulder_pitch: 0.0

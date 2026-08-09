@@ -3,7 +3,9 @@
 Wraps a Publisher with:
 - Dead-man switch (pynput global hotkey on Windows; commands flow only when held).
 - E-stop hotkey (zero output, disable command flow).
-- Watchdog (E-stop if main loop misses > N cycles).
+- Watchdog (E-stop if the main loop stops feeding commands) — runs on its OWN
+  thread, because the stall it must catch is precisely the case where the main
+  loop is blocked and therefore cannot tick anything itself.
 - Tracking-loss policy (ramp to a configured safe pose when confidence drops).
 """
 
@@ -13,8 +15,9 @@ import logging
 import math
 import threading
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Any, Callable, Protocol
+from typing import Any, Protocol
 
 from core.types import JointCommand
 from publisher.base import Publisher
@@ -39,13 +42,13 @@ class PynputHotkey:
 
     def _normalise(self, key: Any) -> str | None:
         try:
-            from pynput.keyboard import Key, KeyCode  # type: ignore
+            from pynput.keyboard import Key, KeyCode
         except ImportError:
             return None
         if isinstance(key, KeyCode) and key.char is not None:
-            return key.char.lower()
+            return str(key.char).lower()
         if isinstance(key, Key):
-            return key.name.lower()
+            return str(key.name).lower()
         return None
 
     def _on_press(self, key: Any) -> None:
@@ -66,7 +69,7 @@ class PynputHotkey:
 
     def start(self) -> None:
         try:
-            from pynput.keyboard import Listener  # type: ignore
+            from pynput.keyboard import Listener
         except ImportError:
             log.warning("pynput unavailable; hotkey disabled (commands will not flow)")
             return
@@ -89,7 +92,17 @@ class SafetyConfig:
     ramp_to_safe_s: float = 1.5
     watchdog_factor: int = 3  # cycles
     cycle_dt_s: float = 1.0 / 30.0
+    # Explicit stall timeout in seconds. None -> cycle_dt_s * watchdog_factor.
+    # Prefer setting this: the derived value is a *loop period* multiple, which at
+    # 60 Hz is only 50 ms — far tighter than a 30 fps camera's real frame jitter,
+    # so it would trip on normal hiccups rather than on an actual stall.
+    watchdog_timeout_s: float | None = None
     safe_pose: dict[str, float] = field(default_factory=dict)
+
+    def stall_timeout_s(self) -> float:
+        if self.watchdog_timeout_s is not None:
+            return float(self.watchdog_timeout_s)
+        return self.cycle_dt_s * self.watchdog_factor
 
 
 @dataclass
@@ -109,6 +122,7 @@ class SafetyLayer:
         config: SafetyConfig,
         hotkey: HotkeyBackend | None = None,
         clock: Callable[[], float] = time.perf_counter,
+        watchdog: bool = True,
     ) -> None:
         self._pub = publisher
         self._cfg = config
@@ -118,19 +132,43 @@ class SafetyLayer:
         self._last_update = clock()
         self._loss = _LossState()
         self._last_cmd: JointCommand | None = None
+        # The watchdog MUST NOT be driven from the caller's loop: the failure it
+        # exists to catch (the loop blocked on a dead camera) is exactly the case
+        # where the caller can't call anything. Own thread, real-time sleeps.
+        self._watchdog_enabled = watchdog
+        self._watchdog_stop = threading.Event()
+        self._watchdog_thread: threading.Thread | None = None
 
     def start(self) -> None:
         if self._hotkey is not None:
             self._hotkey.start()
         self._pub.start()
         self._last_update = self._clock()
+        if self._watchdog_enabled and self._watchdog_thread is None:
+            self._watchdog_stop.clear()
+            self._watchdog_thread = threading.Thread(
+                target=self._watchdog_loop, name="safety-watchdog", daemon=True
+            )
+            self._watchdog_thread.start()
 
     def stop(self) -> None:
+        self._watchdog_stop.set()
+        thread, self._watchdog_thread = self._watchdog_thread, None
+        if thread is not None:
+            thread.join(timeout=1.0)
         try:
             self._pub.stop()
         finally:
             if self._hotkey is not None:
                 self._hotkey.stop()
+
+    def _watchdog_loop(self) -> None:
+        # Poll at a fraction of the stall timeout so detection latency is small
+        # relative to it. Waits on the Event (wall clock) so an injected test
+        # clock can't stall the poller itself.
+        period = max(self._cfg.stall_timeout_s() / 4.0, 0.01)
+        while not self._watchdog_stop.wait(period):
+            self.watchdog_tick()
 
     @property
     def estopped(self) -> bool:
@@ -214,10 +252,11 @@ class SafetyLayer:
         self._last_cmd = cmd
 
     def watchdog_tick(self) -> None:
-        """Call periodically (e.g., from main loop). Triggers E-stop on stall."""
+        """Triggers E-stop when no command has been forwarded within the stall
+        timeout. Driven by :meth:`start`'s background thread; still public so
+        tests can step it with an injected clock."""
         now = self._clock()
-        budget = self._cfg.cycle_dt_s * self._cfg.watchdog_factor
-        if now - self._last_update > budget:
+        if now - self._last_update > self._cfg.stall_timeout_s():
             self.trigger_estop("watchdog")
 
     def note_alive(self) -> None:

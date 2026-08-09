@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import threading
+import time
 from typing import Any
+
+import pytest
 
 from core.safety import SafetyConfig, SafetyLayer
 from core.types import JointCommand
@@ -48,7 +51,9 @@ def test_deadman_release_stops_commands() -> None:
     pub = MockPublisher(rate_hz=200)
     hot = FakeHotkey()
     cfg = SafetyConfig(safe_pose=_safe_pose(), cycle_dt_s=1 / 30.0)
-    safety = SafetyLayer(publisher=pub, config=cfg, hotkey=hot)
+    # watchdog off: this test is about the dead-man, and a background E-stop
+    # would rewrite the publisher target it asserts on.
+    safety = SafetyLayer(publisher=pub, config=cfg, hotkey=hot, watchdog=False)
     safety.start()
     try:
         hot.press("space")
@@ -66,7 +71,7 @@ def test_estop_hotkey_zeroes_commands() -> None:
     pub = MockPublisher(rate_hz=200)
     hot = FakeHotkey()
     cfg = SafetyConfig(safe_pose=_safe_pose(), cycle_dt_s=1 / 30.0)
-    safety = SafetyLayer(publisher=pub, config=cfg, hotkey=hot)
+    safety = SafetyLayer(publisher=pub, config=cfg, hotkey=hot, watchdog=False)
     safety.start()
     try:
         hot.press("space")
@@ -96,7 +101,9 @@ def test_confidence_drop_ramps_to_safe_pose() -> None:
         loss_grace_period_s=0.5,
         ramp_to_safe_s=1.0,
     )
-    safety = SafetyLayer(publisher=pub, config=cfg, hotkey=hot, clock=fake_clock)
+    safety = SafetyLayer(
+        publisher=pub, config=cfg, hotkey=hot, clock=fake_clock, watchdog=False
+    )
     safety.start()
     try:
         # High confidence first → command passes through.
@@ -104,7 +111,7 @@ def test_confidence_drop_ramps_to_safe_pose() -> None:
                       mean_confidence=0.99)
 
         # Drop confidence; advance time past grace + full ramp.
-        for step in range(50):
+        for _step in range(50):
             t[0] += 0.05
             safety.update(
                 _cmd({"r_elbow": 1.0, "r_shoulder_pitch": 0.0, "r_shoulder_roll": 0.0}),
@@ -127,12 +134,80 @@ def test_watchdog_triggers_estop_on_stall() -> None:
         return t[0]
 
     cfg = SafetyConfig(safe_pose=_safe_pose(), cycle_dt_s=0.01, watchdog_factor=3)
-    safety = SafetyLayer(publisher=pub, config=cfg, hotkey=hot, clock=clock)
+    safety = SafetyLayer(
+        publisher=pub, config=cfg, hotkey=hot, clock=clock, watchdog=False
+    )
     safety.start()
     try:
         safety.update(_cmd({"r_elbow": 0.0}), mean_confidence=0.99)
         t[0] += 0.5  # well past 3 * 0.01 = 0.03 s
         safety.watchdog_tick()
         assert safety.estopped
+    finally:
+        safety.stop()
+
+
+def test_stall_timeout_prefers_explicit_seconds() -> None:
+    derived = SafetyConfig(cycle_dt_s=0.01, watchdog_factor=3)
+    assert derived.stall_timeout_s() == pytest.approx(0.03)
+    explicit = SafetyConfig(cycle_dt_s=0.01, watchdog_factor=3, watchdog_timeout_s=0.5)
+    assert explicit.stall_timeout_s() == pytest.approx(0.5)
+
+
+def test_watchdog_thread_fires_without_the_caller_ticking() -> None:
+    """The stall the watchdog exists to catch is a main loop blocked on a dead
+    camera — which cannot tick anything. So the check must not depend on the
+    caller calling it at all.
+
+    (The old wiring called watchdog_tick() immediately after update(), which had
+    just refreshed the liveness stamp, so it could never fire.)
+    """
+    pub = MockPublisher(rate_hz=200)
+    hot = FakeHotkey()
+    hot.press("space")
+    cfg = SafetyConfig(safe_pose=_safe_pose(), watchdog_timeout_s=0.05)
+    safety = SafetyLayer(publisher=pub, config=cfg, hotkey=hot)
+    safety.start()
+    try:
+        safety.update(_cmd({"r_elbow": 0.0}), mean_confidence=0.99)
+        assert not safety.estopped
+        deadline = time.perf_counter() + 2.0
+        while not safety.estopped and time.perf_counter() < deadline:
+            time.sleep(0.01)   # feed nothing: simulate the blocked loop
+        assert safety.estopped, "watchdog thread never fired on a stalled loop"
+    finally:
+        safety.stop()
+
+
+def test_watchdog_thread_stays_quiet_while_commands_flow() -> None:
+    pub = MockPublisher(rate_hz=200)
+    hot = FakeHotkey()
+    hot.press("space")
+    cfg = SafetyConfig(safe_pose=_safe_pose(), watchdog_timeout_s=0.2)
+    safety = SafetyLayer(publisher=pub, config=cfg, hotkey=hot)
+    safety.start()
+    try:
+        end = time.perf_counter() + 0.6   # 3x the timeout
+        while time.perf_counter() < end:
+            safety.update(_cmd({"r_elbow": 0.0}), mean_confidence=0.99)
+            time.sleep(0.02)
+        assert not safety.estopped
+    finally:
+        safety.stop()
+
+
+def test_note_alive_keeps_the_watchdog_quiet_during_calibration() -> None:
+    """Calibration processes frames without emitting commands; note_alive() is
+    what stops that from reading as a stall."""
+    pub = MockPublisher(rate_hz=200)
+    cfg = SafetyConfig(safe_pose=_safe_pose(), watchdog_timeout_s=0.2)
+    safety = SafetyLayer(publisher=pub, config=cfg, hotkey=None)
+    safety.start()
+    try:
+        end = time.perf_counter() + 0.6
+        while time.perf_counter() < end:
+            safety.note_alive()
+            time.sleep(0.02)
+        assert not safety.estopped
     finally:
         safety.stop()
