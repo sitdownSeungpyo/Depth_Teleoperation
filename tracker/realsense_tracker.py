@@ -7,6 +7,7 @@ The Phase 1 acceptance path uses :class:`tracker.mock_tracker.MockTracker` inste
 from __future__ import annotations
 
 import logging
+import math
 import threading
 import time
 from collections.abc import Iterator
@@ -16,13 +17,17 @@ import numpy as np
 from numpy.typing import NDArray
 
 from core.types import SkeletonFrame
-from tracker.body_backend import BodyBackend
+from tracker.base import TrackerHealth
+from tracker.body_backend import BodyBackend, median_depth_3x3
 from tracker.hand_backend import HAND_LANDMARK_TO_SUFFIX, HandBackend
 
 log = logging.getLogger(__name__)
 
 # Re-exported for backward compatibility (used by app.viz_camera). Pose+depth
-# logic now lives in tracker.body_backend.MediaPipeBodyBackend.
+# logic now lives in tracker.body_backend.MediaPipeBodyBackend; the depth helper
+# is defined there too and only re-exported here.
+__all__ = ["MEDIAPIPE_LANDMARK_TO_NAME", "RealSenseTracker", "RealSenseUnavailableError",
+           "median_depth_3x3"]
 MEDIAPIPE_LANDMARK_TO_NAME: dict[int, str] = {
     0: "head",
     11: "left_shoulder",
@@ -42,7 +47,7 @@ class RealSenseUnavailableError(RuntimeError):
 
 def _import_realsense() -> Any:
     try:
-        import pyrealsense2 as rs  # type: ignore
+        import pyrealsense2 as rs
     except ImportError as exc:
         raise RealSenseUnavailableError(
             "pyrealsense2 not installed; install with `pip install pyrealsense2`"
@@ -50,24 +55,13 @@ def _import_realsense() -> Any:
     return rs
 
 
-def median_depth_3x3(depth_image: NDArray[np.uint16], px: int, py: int) -> float:
-    """Return the 3x3 median depth (in meters, after applying ``depth_scale`` upstream).
-
-    Caller passes depth in metres already scaled. We use a 3x3 window around (px, py),
-    skipping zeros (invalid depth), to suppress speckle (FR-1.5).
-    """
-    h, w = depth_image.shape
-    x0, x1 = max(0, px - 1), min(w, px + 2)
-    y0, y1 = max(0, py - 1), min(h, py + 2)
-    window = depth_image[y0:y1, x0:x1].ravel()
-    valid = window[window > 0]
-    if valid.size == 0:
-        return 0.0
-    return float(np.median(valid))
-
-
 class RealSenseTracker:
     """Capture color+depth from a D435i and emit 3D keypoints in the camera frame."""
+
+    # Consecutive capture failures tolerated before the thread gives up and
+    # reports itself dead via :meth:`health`. Reopening the pipeline recovers
+    # from transient USB glitches; a persistent fault must not retry forever.
+    MAX_CONSECUTIVE_FAILURES = 10
 
     def __init__(
         self,
@@ -114,6 +108,11 @@ class RealSenseTracker:
         self._hand_backend = hand_backend
         self._lock = threading.Lock()
         self._latest: SkeletonFrame | None = None
+        # Wall-clock stamp of the last frame accepted, so callers can tell a
+        # *stale* frame from a fresh one. frame.timestamp alone can't: it never
+        # changes once the capture thread stops producing.
+        self._latest_wall: float | None = None
+        self._fatal_error: str | None = None
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
         self._rs_pipeline: Any = None
@@ -241,6 +240,24 @@ class RealSenseTracker:
         with self._lock:
             return self._latest
 
+    def health(self) -> TrackerHealth:
+        """Liveness of the capture thread + age of the most recent frame.
+
+        ``latest()`` keeps handing out the last frame after the thread dies, so
+        this is the only way a caller can tell "operator is holding still" from
+        "the camera stopped feeding us".
+        """
+        thread = self._thread
+        with self._lock:
+            wall = self._latest_wall
+        age = math.inf if wall is None else max(time.perf_counter() - wall, 0.0)
+        return TrackerHealth(
+            running=thread is not None and not self._stop.is_set(),
+            alive=thread is not None and thread.is_alive(),
+            frame_age_s=age,
+            error=self._fatal_error,
+        )
+
     def latest_color(self) -> NDArray[np.uint8] | None:
         """Most recent BGR color frame (for live monitors). None until first capture."""
         return self._latest_color
@@ -263,6 +280,12 @@ class RealSenseTracker:
         # polls. Most callers should use the Protocol's latest() instead.
         last_ts = 0.0
         while not self._stop.is_set():
+            if self._fatal_error is not None:
+                # Ending the iterator surfaces the failure to the caller's loop
+                # instead of spinning forever on a frame that will never change.
+                log.error("capture thread is dead (%s); ending frame stream",
+                          self._fatal_error)
+                return
             frame = self.latest()
             if frame is not None and frame.timestamp != last_ts:
                 last_ts = frame.timestamp
@@ -391,15 +414,34 @@ class RealSenseTracker:
                 confidence[f"{det.side}_{suffix}"] = det.confidence
 
     def _run(self) -> None:
-        rs = _import_realsense()
         backoff = 0.1
+        consecutive_failures = 0
         while not self._stop.is_set():
             try:
                 frame = self._process_one()
-            except RuntimeError as exc:
-                log.warning("RealSense pipeline error (%s); reopening", exc)
+            except Exception as exc:  # noqa: BLE001
+                # Deliberately broad. Previously only RuntimeError was caught, so
+                # any other error out of a pose backend killed this thread
+                # silently — latest() then returned the same stale frame forever
+                # and nothing downstream could tell. A dead capture thread must
+                # be an observable state, never a silent one.
+                consecutive_failures += 1
+                log.warning(
+                    "RealSense capture error #%d (%s); reopening pipeline",
+                    consecutive_failures, exc,
+                )
+                if consecutive_failures > self.MAX_CONSECUTIVE_FAILURES:
+                    self._fatal_error = (
+                        f"{type(exc).__name__}: {exc} "
+                        f"(after {consecutive_failures} consecutive failures)"
+                    )
+                    log.error(
+                        "RealSense capture thread giving up: %s", self._fatal_error
+                    )
+                    return
                 try:
-                    self._rs_pipeline.stop()
+                    if self._rs_pipeline is not None:
+                        self._rs_pipeline.stop()
                 except Exception:  # noqa: BLE001
                     pass
                 time.sleep(backoff)
@@ -410,8 +452,9 @@ class RealSenseTracker:
                 except Exception as restart_exc:  # noqa: BLE001
                     log.warning("RealSense restart failed: %s", restart_exc)
                 continue
-            _ = rs  # keep symbol referenced for potential future use
+            consecutive_failures = 0
             if frame is None:
                 continue
             with self._lock:
                 self._latest = frame
+                self._latest_wall = time.perf_counter()

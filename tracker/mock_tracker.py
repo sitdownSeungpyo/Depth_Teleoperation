@@ -3,15 +3,18 @@
 from __future__ import annotations
 
 import json
+import math
 import sys
 import threading
 import time
 from collections.abc import Iterator
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 
 from core.types import SkeletonFrame
+from tracker.base import TrackerHealth
 
 
 def _raise_windows_timer_resolution() -> None:
@@ -30,16 +33,14 @@ def _raise_windows_timer_resolution() -> None:
         pass
 
 
-def _frame_from_dict(d: dict[str, object]) -> SkeletonFrame:
+def _frame_from_dict(d: dict[str, Any]) -> SkeletonFrame:
     keypoints = {
         name: np.asarray(coords, dtype=np.float64)
-        for name, coords in (d["keypoints"] or {}).items()  # type: ignore[union-attr]
+        for name, coords in (d.get("keypoints") or {}).items()
     }
-    confidence = {
-        name: float(c) for name, c in (d["confidence"] or {}).items()  # type: ignore[union-attr]
-    }
+    confidence = {name: float(c) for name, c in (d.get("confidence") or {}).items()}
     return SkeletonFrame(
-        timestamp=float(d["timestamp"]),  # type: ignore[arg-type]
+        timestamp=float(d["timestamp"]),
         keypoints=keypoints,
         confidence=confidence,
     )
@@ -58,6 +59,8 @@ class MockTracker:
         self._loop = loop
         self._frames: list[SkeletonFrame] = []
         self._latest: SkeletonFrame | None = None
+        self._latest_wall: float | None = None
+        self._started = False
         self._lock = threading.Lock()
         self._stop = threading.Event()
 
@@ -76,14 +79,25 @@ class MockTracker:
     def start(self) -> None:
         self._load()
         self._stop.clear()
+        self._started = True
         _raise_windows_timer_resolution()
 
     def stop(self) -> None:
         self._stop.set()
+        self._started = False
 
     def latest(self) -> SkeletonFrame | None:
         with self._lock:
             return self._latest
+
+    def health(self) -> TrackerHealth:
+        """Replay has no producer thread — frames only advance while the caller
+        consumes ``stream()``, so ``alive`` simply tracks start/stop."""
+        with self._lock:
+            wall = self._latest_wall
+        age = math.inf if wall is None else max(time.perf_counter() - wall, 0.0)
+        running = self._started and not self._stop.is_set()
+        return TrackerHealth(running=running, alive=running, frame_age_s=age)
 
     def stream(self) -> Iterator[SkeletonFrame]:
         self._load()
@@ -103,6 +117,7 @@ class MockTracker:
             )
             with self._lock:
                 self._latest = stamped
+                self._latest_wall = time.perf_counter()
             yield stamped
             idx += 1
             if idx >= len(self._frames):
