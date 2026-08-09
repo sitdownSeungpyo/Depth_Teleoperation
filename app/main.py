@@ -15,13 +15,12 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
-import yaml
 
 from core.aligner import AlignmentError, align_to_torso, resolve_gravity_up
 from core.filter import (
     FilterAndLimiter,
-    JointLimits,
     JointLimiterConfig,
+    JointLimits,
     KeypointSmoother,
     OneEuroParams,
 )
@@ -35,6 +34,7 @@ from core.retarget import (
 from core.safety import PynputHotkey, SafetyConfig, SafetyLayer
 from publisher.mock_publisher import MockPublisher
 from publisher.udp_publisher import UdpPublisherSkeleton
+from tracker.base import health_of
 from tracker.body_backend import BodyBackend, MediaPipeBodyBackend
 from tracker.hand_backend import HandBackend, MediaPipeHandBackend
 from tracker.mock_tracker import MockTracker
@@ -250,6 +250,11 @@ def _build_safety(
         ramp_to_safe_s=float(s_cfg["ramp_to_safe_s"]),
         watchdog_factor=int(s_cfg["watchdog_factor"]),
         cycle_dt_s=loop_dt,
+        watchdog_timeout_s=(
+            float(s_cfg["watchdog_timeout_s"])
+            if s_cfg.get("watchdog_timeout_s") is not None
+            else None
+        ),
         safe_pose=dict(s_cfg["safe_pose"]),
     )
     hotkey = (
@@ -302,13 +307,19 @@ def run(
     # Gravity-aligned aligner — 운영자 토르소 tilt 의 영향을 제거.
     # config.tracker.realsense.gravity_up (list[3]) 가 있으면 body-relative 대신 사용.
     gravity_up_cfg = cfg.get("tracker", {}).get("realsense", {}).get("gravity_up")
-    gravity_up: "np.ndarray | None" = (
+    gravity_up: np.ndarray | None = (
         np.asarray(gravity_up_cfg, dtype=np.float64) if gravity_up_cfg else None
     )
 
     # Decoupled shoulder_pitch ↔ elbow (Yi 2012 식 3에서 `-theta_5` 제거).
     # MediaPipe elbow 노이즈가 sh_p 로 propagate 되는 것 차단.
     decouple_pitch_elbow = bool(cfg.get("retarget", {}).get("decouple_pitch_elbow", False))
+
+    # Per-arm confidence gate — skip an arm whose worst keypoint score is too low
+    # so the filter holds its last command instead of tracking a bad estimate.
+    min_arm_confidence = float(
+        cfg.get("tracker", {}).get("pose", {}).get("min_arm_confidence", 0.0)
+    )
 
     robot_cfg = cfg["retarget"]["robot"]
     robot = RobotGeometry(
@@ -370,6 +381,7 @@ def run(
                         calibration = collector.finalise(
                             robot=robot,
                             decouple_pitch_elbow=decouple_pitch_elbow,
+                            min_arm_confidence=min_arm_confidence,
                         )
                         # Config rest_offsets (if any) override auto-captured values
                         # per joint — auto for unspecified joints, manual for the rest.
@@ -395,6 +407,7 @@ def run(
                 joint_targets = retarget_full_upper_body(
                     aligned, robot, calibration,
                     decouple_pitch_elbow=decouple_pitch_elbow,
+                    min_arm_confidence=min_arm_confidence,
                 )
             except SingularConfigurationError as exc:
                 log.warning("retarget skipped frame: %s", exc)
@@ -410,7 +423,10 @@ def run(
 
             cmd = filt(joint_targets, timestamp=now, source_frame_ts=frame.timestamp)
             safety.update(cmd, mean_confidence=frame.mean_confidence())
-            safety.watchdog_tick()
+            # NOTE: no watchdog_tick() here. It used to be called right after
+            # update(), which had just refreshed the liveness stamp — so the check
+            # could never fail. SafetyLayer.start() now runs it on its own thread,
+            # which is the only way to catch a loop blocked on a stalled tracker.
 
             # Latency = time from frame capture to *after* the command is forwarded.
             latencies.append(time.perf_counter() - frame.timestamp)
@@ -436,6 +452,12 @@ def run(
                     r_sr, l_sr, r_sr - l_sr,
                     r_elb, l_elb, r_elb - l_elb,
                 )
+        # The stream ending on its own means the producer gave up (a replay that
+        # ran out is the benign case). Read health BEFORE stop() clears it.
+        health = health_of(tracker)
+        if health.error is not None:
+            log.error("tracker capture failed: %s", health.error)
+            safety.trigger_estop("tracker capture failure")
     finally:
         safety.stop()
         tracker.stop()

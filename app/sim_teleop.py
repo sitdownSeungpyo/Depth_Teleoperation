@@ -36,13 +36,16 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
-import yaml
 
 from core.aligner import AlignmentError, align_to_torso, resolve_gravity_up
 from core.filter import KeypointSmoother, OneEuroParams
+from tracker.base import health_of
 
 log = logging.getLogger(__name__)
 _SIDES = ("right", "left")
+# Frames older than this mean the camera stopped feeding us; the robot holds its
+# last pose either way, but silence would read as "operator is standing still".
+STALE_FRAME_S = 0.5
 
 
 def _valid(kp: dict[str, Any], name: str) -> np.ndarray | None:
@@ -85,6 +88,11 @@ def main() -> int:
     ))
     gravity_up_cfg = cfg.get("tracker", {}).get("realsense", {}).get("gravity_up")
     gravity_up = np.asarray(gravity_up_cfg, dtype=np.float64) if gravity_up_cfg else None
+    # Per-arm confidence gate, shared with app.main (tracker.pose.min_arm_confidence).
+    min_arm_confidence = float(
+        cfg.get("tracker", {}).get("pose", {}).get("min_arm_confidence", 0.0)
+    )
+    held_arms = {"right": 0, "left": 0}
 
     # ---- build the chosen IK driver ----
     drive_numeric = args.ik == "numeric"
@@ -102,7 +110,7 @@ def main() -> int:
         num_filt = None if args.no_filter else _build_filter(cfg)
         num_qadr: dict[str, int] = {}
         for arm in rm.arms.values():
-            for n, a in zip(arm.ik.joint_names, arm.ik.qadr):
+            for n, a in zip(arm.ik.joint_names, arm.ik.qadr, strict=True):
                 num_qadr[n[:-6] if n.endswith("_joint") else n] = int(a)
         print(f"IK=numeric  model={Path(robot_cfg['model_path']).name}  "
               f"filter={'off' if args.no_filter else 'one_euro'}  "
@@ -114,8 +122,11 @@ def main() -> int:
             print("IK joint_limits: (none in config) -> using model jnt_range", flush=True)
     else:
         from core.retarget import (
-            Calibration, CalibrationCollector, RobotGeometry,
-            SingularConfigurationError, retarget_full_upper_body,
+            Calibration,
+            CalibrationCollector,
+            RobotGeometry,
+            SingularConfigurationError,
+            retarget_full_upper_body,
         )
         model_path = args.model or Path(cfg["robot"]["model_path"])
         model = mujoco.MjModel.from_xml_path(str(model_path))
@@ -158,7 +169,9 @@ def main() -> int:
     start = time.perf_counter()
     last_log = start
 
-    def pump_camera(frame: Any, now: float) -> bool:
+    stale_warned = False
+
+    def pump_camera(frame: Any, now: float, stale: bool) -> bool:
         """Draw + show the camera skeleton window. Returns False if the user
         asked to quit (q/ESC). Independent of IK/alignment so it keeps showing
         live video and the estimated skeleton even when no pose is usable."""
@@ -175,10 +188,15 @@ def main() -> int:
         _hud_lines(color, [
             (f"{backend}  ik={args.ik}", (0, 220, 0) if detected else (0, 165, 255)),
             (f"conf {conf:.2f}", (255, 255, 255)),
+            (f"camera {health_of(tracker).describe()}",
+             (0, 0, 255) if stale else (255, 255, 255)),
         ])
         h, w = color.shape[:2]
-        banner, bcol = (("BODY DETECTED", (0, 200, 0)) if detected
-                        else ("NO BODY - stand 1.5-2.5m, full torso in frame", (0, 0, 255)))
+        if stale:
+            banner, bcol = ("CAMERA STALLED - robot holding last pose", (0, 0, 255))
+        else:
+            banner, bcol = (("BODY DETECTED", (0, 200, 0)) if detected
+                            else ("NO BODY - stand 1.5-2.5m, full torso in frame", (0, 0, 255)))
         cv2.rectangle(color, (0, h - 28), (w, h), (0, 0, 0), -1)
         cv2.putText(color, banner, (8, h - 8), cv2.FONT_HERSHEY_SIMPLEX,
                     0.55, bcol, 2, cv2.LINE_AA)
@@ -204,9 +222,25 @@ def main() -> int:
                     break
                 frame = tracker.latest()
 
+                # A dead or stalled capture thread keeps latest() returning the
+                # same frame forever, which is visually identical to a motionless
+                # operator. Surface it instead of letting the robot sit frozen.
+                hp = health_of(tracker)
+                if hp.error is not None:
+                    print(f"\ncamera capture thread died: {hp.error}", file=sys.stderr)
+                    break
+                stale = hp.is_stale(STALE_FRAME_S)
+                if stale and not stale_warned:
+                    stale_warned = True
+                    print(f"WARNING: no camera frame for >{STALE_FRAME_S:.1f}s "
+                          f"({hp.describe()}); robot holding last pose", flush=True)
+                elif not stale and stale_warned:
+                    stale_warned = False
+                    print("camera recovered", flush=True)
+
                 # Camera skeleton window — pump every iteration (all branches),
                 # so live video + estimated skeleton stay smooth and 'q' quits.
-                if show_camera and not pump_camera(frame, now):
+                if show_camera and not pump_camera(frame, now, stale):
                     break
 
                 if frame is None or frame.timestamp == last_ts:
@@ -226,6 +260,16 @@ def main() -> int:
                 if drive_numeric:
                     raw: dict[str, float] = {}
                     for side in _SIDES:
+                        # Confidence-aware hold: skip the arm entirely while its
+                        # worst keypoint score is low, leaving qpos (and the
+                        # filter's last command) untouched. The target-step clamp
+                        # can't cover this — it bounds how FAR a target moves per
+                        # frame, so a *sustained* misdetection (swapped limbs,
+                        # say) just slews the arm to the wrong place instead of
+                        # jumping there.
+                        if aligned.arm_confidence(side) < min_arm_confidence:
+                            held_arms[side] += 1
+                            continue
                         sh = _valid(kp, f"{side}_shoulder")
                         el = _valid(kp, f"{side}_elbow")
                         wr = _valid(kp, f"{side}_wrist")
@@ -249,16 +293,25 @@ def main() -> int:
                         collector.push(aligned)
                         if collector.ready():
                             try:
-                                calibration = collector.finalise(robot=ageo, decouple_pitch_elbow=decouple)
+                                calibration = collector.finalise(
+                                    robot=ageo, decouple_pitch_elbow=decouple,
+                                    min_arm_confidence=min_arm_confidence,
+                                )
                             except SingularConfigurationError:
                                 calibration = Calibration(operator_arm_length=fallback)
                             print("[CALIBRATED]", flush=True)
                         else:
-                            v.sync(); continue
+                            v.sync()
+                            continue
                     try:
-                        tgt = retarget_full_upper_body(aligned, ageo, calibration, decouple_pitch_elbow=decouple)
+                        tgt = retarget_full_upper_body(
+                            aligned, ageo, calibration,
+                            decouple_pitch_elbow=decouple,
+                            min_arm_confidence=min_arm_confidence,
+                        )
                     except SingularConfigurationError:
-                        v.sync(); continue
+                        v.sync()
+                        continue
                     if gain:
                         tgt = {j: val * gain.get(j, 1.0) for j, val in tgt.items()}
                     for name, val in tgt.items():
@@ -275,7 +328,10 @@ def main() -> int:
                         f"r_sp={js.get('r_shoulder_pitch', 0):+.2f} "
                         f"r_sr={js.get('r_shoulder_roll', 0):+.2f} "
                         f"r_sy={js.get('r_shoulder_yaw', 0):+.2f} "
-                        f"r_elb={js.get('r_elbow', 0):+.2f}  conf={frame.mean_confidence():.2f}",
+                        f"r_elb={js.get('r_elbow', 0):+.2f}  conf={frame.mean_confidence():.2f}"
+                        f"  arm_conf R={aligned.arm_confidence('right'):.2f}"
+                        f" L={aligned.arm_confidence('left'):.2f}"
+                        f"  held R={held_arms['right']} L={held_arms['left']}",
                         flush=True,
                     )
     finally:
