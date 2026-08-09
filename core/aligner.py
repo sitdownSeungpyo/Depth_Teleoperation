@@ -11,7 +11,7 @@ References
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 import numpy as np
@@ -29,6 +29,30 @@ class AlignedFrame:
     keypoints: dict[str, NDArray[np.float64]]
     rotation: NDArray[np.float64]  # 3x3, camera -> torso
     rpy: tuple[float, float, float]  # roll, pitch, yaw of operator torso (radians)
+    # Per-keypoint detector score, carried through from the SkeletonFrame.
+    # Rotation doesn't change how much we trust a keypoint, but downstream IK
+    # had no way to see the scores at all — it could only infer "rejected" from
+    # the zero-vector convention, which is a hard yes/no. A *marginal* keypoint
+    # (score just above the backend's reject threshold) is the case that puts an
+    # IK target in the wrong place, and it needs the actual number.
+    # Empty for frames built without scores (fixtures/tests) — see arm_confidence.
+    confidence: dict[str, float] = field(default_factory=dict)
+
+    def arm_confidence(self, side: str) -> float:
+        """Lowest score among ``side``'s shoulder / elbow / wrist.
+
+        The minimum, not the mean: the arm's IK target is only as trustworthy as
+        its worst joint, and averaging lets two confident joints mask one bad one.
+
+        Returns 1.0 when the frame carries no scores at all, so callers can gate
+        on this unconditionally without breaking score-less inputs.
+        """
+        if not self.confidence:
+            return 1.0
+        return min(
+            self.confidence.get(f"{side}_{part}", 0.0)
+            for part in ("shoulder", "elbow", "wrist")
+        )
 
 
 def _closest_rotation(m: NDArray[np.float64]) -> NDArray[np.float64]:
@@ -43,7 +67,7 @@ def _closest_rotation(m: NDArray[np.float64]) -> NDArray[np.float64]:
     if np.linalg.det(r) < 0.0:
         u[:, -1] *= -1.0
         r = u @ vt
-    return r
+    return np.asarray(r, dtype=np.float64)
 
 
 def _rpy_from_rotation(r: NDArray[np.float64]) -> tuple[float, float, float]:
@@ -80,7 +104,7 @@ def resolve_gravity_up(
     if getter is not None:
         measured = getter()
         if measured is not None:
-            return measured
+            return np.asarray(measured, dtype=np.float64)
     return fixed
 
 
@@ -159,4 +183,9 @@ def align_to_torso(
     for name, p in frame.keypoints.items():
         out[name] = rt @ p.astype(np.float64)
 
-    return AlignedFrame(keypoints=out, rotation=r, rpy=_rpy_from_rotation(r))
+    return AlignedFrame(
+        keypoints=out,
+        rotation=r,
+        rpy=_rpy_from_rotation(r),
+        confidence=dict(frame.confidence),
+    )

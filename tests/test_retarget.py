@@ -16,7 +16,6 @@ from core.retarget import (
 )
 from core.types import SkeletonFrame
 
-
 SHOULDER = 0.18
 UPPER = 0.28
 LOWER = 0.27
@@ -106,3 +105,63 @@ def test_calibration_from_tpose_frames() -> None:
     aligned = [align_to_torso(_frame(_tpose_keypoints())) for _ in range(5)]
     cal = Calibration.from_tpose_frames(aligned)
     assert abs(cal.operator_arm_length - ARM) < 1e-6
+
+
+def _frame_with_conf(kp: dict[str, np.ndarray], conf: dict[str, float]) -> SkeletonFrame:
+    base = {k: 1.0 for k in kp}
+    base.update(conf)
+    return SkeletonFrame(timestamp=0.0, keypoints=kp, confidence=base)
+
+
+def test_low_arm_confidence_raises_when_gated(
+    robot: RobotGeometry, calib: Calibration
+) -> None:
+    """A marginal keypoint places the arm plausibly-but-wrongly; the zero-vector
+    check can't see it because the keypoint was never hard-rejected."""
+    aligned = align_to_torso(
+        _frame_with_conf(_tpose_keypoints(), {"right_wrist": 0.2})
+    )
+    with pytest.raises(SingularConfigurationError, match="confidence"):
+        retarget_arm(aligned, "right", robot, calib, min_arm_confidence=0.4)
+
+
+def test_low_arm_confidence_passes_when_gate_disabled(
+    robot: RobotGeometry, calib: Calibration
+) -> None:
+    aligned = align_to_torso(
+        _frame_with_conf(_tpose_keypoints(), {"right_wrist": 0.2})
+    )
+    angles = retarget_arm(aligned, "right", robot, calib, min_arm_confidence=0.0)
+    assert "r_elbow" in angles
+
+
+def test_gated_arm_omits_all_its_joints_including_passthroughs(
+    robot: RobotGeometry, calib: Calibration
+) -> None:
+    """A failed arm must contribute NOTHING, so the filter holds its last
+    command. Defaulting its unobserved joints to 0.0 would snap them to the
+    robot's zero pose — the opposite of a hold."""
+    aligned = align_to_torso(
+        _frame_with_conf(_tpose_keypoints(), {"right_elbow": 0.1})
+    )
+    angles = retarget_full_upper_body(aligned, robot, calib, min_arm_confidence=0.4)
+    for joint in (
+        "r_shoulder_pitch", "r_shoulder_roll", "r_elbow",
+        "r_shoulder_yaw", "r_wrist_yaw", "r_wrist_pitch",
+    ):
+        assert joint not in angles, f"{joint} leaked from a gated arm"
+    # The healthy arm is unaffected, passthroughs included.
+    for joint in ("l_shoulder_pitch", "l_elbow", "l_shoulder_yaw", "l_wrist_pitch"):
+        assert joint in angles
+
+
+def test_degenerate_arm_also_omits_its_passthroughs(
+    robot: RobotGeometry, calib: Calibration
+) -> None:
+    kp = _tpose_keypoints()
+    kp["right_elbow"] = np.zeros(3)   # hard reject, zero-vector convention
+    kp["right_wrist"] = np.zeros(3)
+    angles = retarget_full_upper_body(align_to_torso(_frame(kp)), robot, calib)
+    assert "r_elbow" not in angles
+    assert "r_shoulder_yaw" not in angles
+    assert "l_shoulder_yaw" in angles

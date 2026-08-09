@@ -24,8 +24,9 @@ from __future__ import annotations
 import logging
 import math
 from collections import deque
+from collections.abc import Iterable
 from dataclasses import dataclass, field
-from typing import Iterable, Literal
+from typing import Literal
 
 import numpy as np
 from numpy.typing import NDArray
@@ -62,7 +63,7 @@ class Calibration:
     rest_offsets: dict[str, float] = field(default_factory=dict)
 
     @classmethod
-    def from_tpose_frames(cls, frames: Iterable[AlignedFrame]) -> "Calibration":
+    def from_tpose_frames(cls, frames: Iterable[AlignedFrame]) -> Calibration:
         """Average shoulder→wrist distance across both arms over a held T-pose."""
         lengths: list[float] = []
         for frame in frames:
@@ -138,8 +139,7 @@ def _estimate_shoulder_yaw(
     if forearm is None:
         return 0.0
 
-    elbow_axis = np.cross(upper, forearm)
-    elbow_axis = _safe_normalize(elbow_axis, min_norm=0.1)
+    elbow_axis = _safe_normalize(np.cross(upper, forearm), min_norm=0.1)
     if elbow_axis is None:
         return 0.0  # nearly straight arm — yaw not observable
 
@@ -216,6 +216,7 @@ def retarget_arm(
     robot: RobotGeometry,
     calibration: Calibration,
     decouple_pitch_elbow: bool = False,
+    min_arm_confidence: float = 0.0,
 ) -> dict[str, float]:
     """Map one operator arm onto three robot joint angles (radians).
 
@@ -228,13 +229,23 @@ def retarget_arm(
     immune to MediaPipe elbow noise propagating into sh_p. Trade-off: full elbow flex
     may shift hand position slightly relative to operator. Recommended for noisy data.
     """
+    # Marginal keypoints (score just above the backend's reject threshold) are the
+    # ones that place a joint plausibly-but-wrongly — a hard zero-vector check
+    # can't see them. Raising here makes the caller hold the arm's last command
+    # instead of tracking a bad estimate. 0.0 disables the gate.
+    if min_arm_confidence > 0.0:
+        arm_conf = aligned.arm_confidence(side)
+        if arm_conf < min_arm_confidence:
+            raise SingularConfigurationError(
+                f"{side} arm confidence {arm_conf:.2f} < {min_arm_confidence:.2f}"
+            )
+
     shoulder = aligned.keypoints[f"{side}_shoulder"]
     elbow = aligned.keypoints[f"{side}_elbow"]
     wrist = aligned.keypoints[f"{side}_wrist"]
 
     # confidence=0인 keypoint는 RealSenseTracker가 [0,0,0]으로 zero-vector 처리한다.
     # 이 상태로 IK를 풀면 carbage 값이 나오므로 명시적으로 거부.
-    # NOTE: aligned는 confidence를 따로 들고 있지 않으므로 zero-vector check로 대체.
     if (
         float(np.linalg.norm(elbow)) < 1e-6
         or float(np.linalg.norm(wrist)) < 1e-6
@@ -251,13 +262,11 @@ def retarget_arm(
     if upper_n < 1e-6 or lower_n < 1e-6 or c < 1e-6:
         raise SingularConfigurationError(f"degenerate {side} arm geometry")
 
-    scale = (robot.upper_arm_length + robot.lower_arm_length) / max(
-        calibration.operator_arm_length, 1e-6
-    )
-    # Scale only affects link lengths, not angles, so we don't need to apply it here —
-    # but the scale factor is exposed for downstream Cartesian targets if a future
-    # controller wants them. The angles below are scale-invariant by construction.
-    _ = scale
+    # NOTE: no operator→robot length scaling is applied here. Every angle below is
+    # scale-invariant by construction (they come from normalised directions), so
+    # ``robot.upper_arm_length`` / ``calibration.operator_arm_length`` only matter
+    # to a Cartesian controller. The numeric IK path (core.robot_model) does its
+    # own link-length scaling from the model.
 
     # Eq. 1 (Yi 2012, spec §1.1/§4.3 FR-3.2) — elbow flexion = angle between the
     # upper-arm vector a_u (shoulder→elbow) and lower-arm vector a_l (elbow→wrist):
@@ -325,35 +334,41 @@ def retarget_full_upper_body(
     robot: RobotGeometry,
     calibration: Calibration,
     decouple_pitch_elbow: bool = False,
+    min_arm_confidence: float = 0.0,
 ) -> dict[str, float]:
     """Run :func:`retarget_arm` for both arms and append torso yaw / head pitch.
 
     Per-arm errors are caught and the failing arm's joints are simply omitted from
-    the result, so a downstream filter can hold them at their previous values
-    rather than freezing the whole frame.
+    the result — including its unobserved passthrough joints — so a downstream
+    filter holds them at their previous values rather than freezing the whole
+    frame or snapping them to zero.
 
     ``decouple_pitch_elbow`` (default False) makes shoulder_pitch independent of
     elbow flex — recommended when MediaPipe elbow estimates are noisy.
     """
     out: dict[str, float] = {}
+    solved: list[str] = []
     for side in ("right", "left"):
         try:
             out.update(retarget_arm(
                 aligned, side, robot, calibration,
                 decouple_pitch_elbow=decouple_pitch_elbow,
+                min_arm_confidence=min_arm_confidence,
             ))
+            solved.append(side)
         except SingularConfigurationError as exc:
             log.debug("skipping %s arm: %s", side, exc)
     out["torso_yaw"] = aligned.rpy[2]
     out["head_pitch"] = aligned.rpy[1]
-    # Phase 1+ passthrough = 0 for joints Yi 2012 IK doesn't compute.
-    # Phase 4 may extend via MediaPipe hand/face landmarks.
-    out.setdefault("r_shoulder_yaw", 0.0)  # upper arm twist
-    out.setdefault("l_shoulder_yaw", 0.0)
-    out.setdefault("r_wrist_yaw", 0.0)     # forearm twist
-    out.setdefault("l_wrist_yaw", 0.0)
-    out.setdefault("r_wrist_pitch", 0.0)
-    out.setdefault("l_wrist_pitch", 0.0)
+    # Passthrough = 0 for joints this frame couldn't observe — but ONLY for arms
+    # that actually solved. Defaulting a *failed* arm's joints to 0 would snap
+    # them to the robot's zero pose, which is the opposite of the hold that
+    # omitting the arm's other joints was meant to produce.
+    for side in solved:
+        prefix = "r" if side == "right" else "l"
+        out.setdefault(f"{prefix}_shoulder_yaw", 0.0)  # upper arm twist
+        out.setdefault(f"{prefix}_wrist_yaw", 0.0)     # forearm twist
+        out.setdefault(f"{prefix}_wrist_pitch", 0.0)
     out.setdefault("neck_yaw", 0.0)        # head turning left/right
     return out
 
@@ -382,6 +397,7 @@ class CalibrationCollector:
         self,
         robot: RobotGeometry | None = None,
         decouple_pitch_elbow: bool = False,
+        min_arm_confidence: float = 0.0,
     ) -> Calibration:
         if not self.ready():
             raise SingularConfigurationError(
@@ -399,8 +415,12 @@ class CalibrationCollector:
         accum: dict[str, list[float]] = {}
         for frame in self._buf:
             try:
+                # Gate here too: a low-confidence frame would otherwise bias the
+                # rest_offsets that every later command is measured against.
                 angles = retarget_full_upper_body(
-                    frame, robot, temp, decouple_pitch_elbow=decouple_pitch_elbow
+                    frame, robot, temp,
+                    decouple_pitch_elbow=decouple_pitch_elbow,
+                    min_arm_confidence=min_arm_confidence,
                 )
             except SingularConfigurationError:
                 continue

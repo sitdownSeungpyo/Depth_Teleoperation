@@ -72,3 +72,39 @@ def test_degenerate_basis_raises() -> None:
     frame.keypoints["left_shoulder"] = frame.keypoints["right_shoulder"].copy()
     with pytest.raises(AlignmentError):
         align_to_torso(frame)
+
+
+def test_confidence_is_carried_through_alignment() -> None:
+    """Rotating keypoints doesn't change how much we trust them, and downstream
+    IK has no other way to see the scores — the zero-vector convention only
+    encodes a hard reject."""
+    frame = _tpose_frame()
+    frame.confidence["right_wrist"] = 0.21
+    aligned = align_to_torso(frame)
+    assert aligned.confidence["right_wrist"] == pytest.approx(0.21)
+
+
+def test_arm_confidence_is_the_worst_joint_not_the_mean() -> None:
+    frame = _tpose_frame()
+    frame.confidence["right_shoulder"] = 0.95
+    frame.confidence["right_elbow"] = 0.95
+    frame.confidence["right_wrist"] = 0.10   # mean would be a comfortable 0.67
+    aligned = align_to_torso(frame)
+    assert aligned.arm_confidence("right") == pytest.approx(0.10)
+    assert aligned.arm_confidence("left") == pytest.approx(1.0)
+
+
+def test_arm_confidence_treats_a_missing_keypoint_as_zero() -> None:
+    frame = _tpose_frame()
+    del frame.confidence["right_elbow"]
+    aligned = align_to_torso(frame)
+    assert aligned.arm_confidence("right") == 0.0
+
+
+def test_arm_confidence_defaults_to_one_without_scores() -> None:
+    """Score-less inputs (fixtures, hand-built frames) must not read as untrusted,
+    or every caller would have to special-case them."""
+    frame = _tpose_frame()
+    frame.confidence.clear()
+    aligned = align_to_torso(frame)
+    assert aligned.arm_confidence("right") == 1.0
