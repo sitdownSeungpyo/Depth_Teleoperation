@@ -32,11 +32,13 @@ retarget:
     l_shoulder_roll: 1.0
     r_shoulder_yaw: 1.0
     l_shoulder_yaw: 1.0
-    # HMR2 가 elbow 굴곡을 ~3.3배 과소평가함(정면뷰+SMPL prior 깊이 평균회귀).
-    # 운영자 90도 굽힘 → retarget elbow 동적범위 ~27도뿐. 압축비만큼 증폭해 보정.
-    # debug_elbow.py 측정 근거. 정지시 jitter 거슬리면 keypoint_smoother 강화 또는 값 ↓.
-    r_elbow: 3.0
-    l_elbow: 3.0
+    # ★ 1.0 으로 되돌림. 3.0 은 HMR2 전용 보정값이었다 — HMR2 는 깊이를 평균으로
+    # 회귀시켜 elbow 굴곡을 ~3.3배 압축하므로(운영자 90° → retarget 동적범위 ~27°,
+    # debug_elbow.py 측정) 그만큼 증폭했던 것. 기본 백엔드가 rtmpose 로 바뀌면서
+    # 실제 깊이를 쓰게 되어 압축이 사라졌고, 3.0 을 그대로 두면 팔꿈치만 3배
+    # 과장되어 움직인다. body_backend 를 hmr2 로 되돌린다면 이 값도 함께 올릴 것.
+    r_elbow: 1.0
+    l_elbow: 1.0
     r_wrist_yaw: 1.0
     l_wrist_yaw: 1.0
     r_wrist_pitch: 1.0
