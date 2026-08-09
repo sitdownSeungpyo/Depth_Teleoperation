@@ -134,7 +134,7 @@ class MediaPipeBodyBackend(BodyBackend):
         self._depth_scale = depth_scale
 
     def start(self) -> None:
-        import mediapipe as mp  # type: ignore[import-not-found]
+        import mediapipe as mp
 
         BaseOptions = mp.tasks.BaseOptions
         PoseLandmarker = mp.tasks.vision.PoseLandmarker
@@ -162,7 +162,7 @@ class MediaPipeBodyBackend(BodyBackend):
     ) -> BodyDetection | None:
         if self._landmarker is None:
             return None
-        import mediapipe as mp  # type: ignore[import-not-found]
+        import mediapipe as mp
 
         mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb_image)
         result = self._landmarker.detect_for_video(mp_image, timestamp_ms)
@@ -207,7 +207,7 @@ class MediaPipeBodyBackend(BodyBackend):
                 keypoints[name] = np.zeros(3, dtype=np.float64)
                 confidence[name] = 0.0
                 continue
-            depth_m = _median_depth_3x3(depth_image, px, py) * self._depth_scale
+            depth_m = median_depth_3x3(depth_image, px, py) * self._depth_scale
             if depth_m <= 0.0 or depth_m > self._depth_max_m:
                 keypoints[name] = np.zeros(3, dtype=np.float64)
                 confidence[name] = 0.0
@@ -253,8 +253,13 @@ class MediaPipeBodyBackend(BodyBackend):
         )
 
 
-def _median_depth_3x3(depth_image: NDArray[np.uint16], px: int, py: int) -> float:
-    """3x3 median depth (in raw depth units), skipping zeros — speckle resistant."""
+def median_depth_3x3(depth_image: NDArray[np.uint16], px: int, py: int) -> float:
+    """3x3 median depth (in raw depth units), skipping zeros — speckle resistant.
+
+    Canonical definition; ``tracker.realsense_tracker`` re-exports it so older
+    callers (app.viz_camera) keep working. Multiply by ``depth_scale`` to get
+    metres — this returns RAW units.
+    """
     h, w = depth_image.shape
     x0, x1 = max(0, px - 1), min(w, px + 2)
     y0, y1 = max(0, py - 1), min(h, py + 2)

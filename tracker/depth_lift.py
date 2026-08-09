@@ -102,13 +102,19 @@ class RobustDepthLifter:
             self.depth_scale, self.depth_max_m,
         )
         prev = self._last.get(name)
-        fresh = prev is not None and (self._frame - prev[1]) <= self.max_stale_frames
+        # Narrowed to a non-None `prev` rather than a separate `fresh` flag, so the
+        # "still fresh" fact and the value it licenses stay tied together.
+        fresh_prev = (
+            prev
+            if prev is not None and (self._frame - prev[1]) <= self.max_stale_frames
+            else None
+        )
 
         if d <= 0.0:
             # Depth hole — reuse the last valid value if still fresh, else drop.
-            return prev[0] if fresh else None
+            return fresh_prev[0] if fresh_prev is not None else None
 
-        if fresh and abs(d - prev[0]) > self.max_jump_m:  # type: ignore[index]
+        if fresh_prev is not None and abs(d - fresh_prev[0]) > self.max_jump_m:
             # Implausible single-frame jump. Likely background bleed. Require the
             # next frame to confirm before committing, so genuine fast motion
             # still gets through after ~1 frame while lone spikes are dropped.
@@ -118,7 +124,7 @@ class RobustDepthLifter:
                 self._pending.pop(name, None)
                 return d
             self._pending[name] = d
-            return prev[0]  # type: ignore[index]
+            return fresh_prev[0]
 
         self._last[name] = (d, self._frame)
         self._pending.pop(name, None)

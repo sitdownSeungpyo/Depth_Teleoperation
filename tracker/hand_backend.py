@@ -94,7 +94,7 @@ class MediaPipeHandBackend(HandBackend):
         self._landmarker: Any = None
 
     def start(self) -> None:
-        import mediapipe as mp  # type: ignore[import-not-found]
+        import mediapipe as mp
 
         BaseOptions = mp.tasks.BaseOptions
         HandLandmarker = mp.tasks.vision.HandLandmarker
@@ -125,7 +125,7 @@ class MediaPipeHandBackend(HandBackend):
     ) -> list[HandDetection]:
         if self._landmarker is None:
             return []
-        import mediapipe as mp  # type: ignore[import-not-found]
+        import mediapipe as mp
 
         mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb_image)
         try:

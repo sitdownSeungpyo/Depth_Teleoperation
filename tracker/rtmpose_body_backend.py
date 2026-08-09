@@ -30,7 +30,7 @@ from tracker.body_backend import (
     BodyBackend,
     BodyDetection,
     DepthDeprojector,
-    _median_depth_3x3,
+    median_depth_3x3,
 )
 from tracker.depth_lift import (
     ARM_SEGMENTS,
@@ -180,7 +180,7 @@ class RTMPoseBodyBackend(BodyBackend):
         if self._device.startswith("cuda"):
             _ensure_onnx_cuda_dll_path()
         try:
-            from rtmlib import Body  # type: ignore[import-not-found]
+            from rtmlib import Body
         except ImportError as exc:
             raise RTMPoseUnavailableError(
                 "rtmlib not installed. Run scripts\\install_rtmpose.ps1 "
@@ -252,7 +252,7 @@ class RTMPoseBodyBackend(BodyBackend):
             if self._lifter is not None:
                 depth_m = self._lifter.lift(name, depth_image, px, py)
             else:
-                d = _median_depth_3x3(depth_image, px, py) * self._depth_scale
+                d = median_depth_3x3(depth_image, px, py) * self._depth_scale
                 depth_m = d if (0.0 < d <= self._depth_max_m) else None
             if depth_m is None:
                 keypoints[name] = np.zeros(3, dtype=np.float64)

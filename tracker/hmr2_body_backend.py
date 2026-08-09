@@ -96,14 +96,14 @@ class Hmr2BodyBackend(BodyBackend):
 
     def start(self) -> None:
         try:
-            import torch  # type: ignore[import-not-found]
+            import torch
         except ImportError as exc:
             raise Hmr2UnavailableError(
                 "PyTorch not installed. Run scripts\\install_hmr2.ps1 first."
             ) from exc
 
         try:
-            from hmr2.models import (  # type: ignore[import-not-found]
+            from hmr2.models import (
                 DEFAULT_CHECKPOINT,
                 load_hmr2,
             )
@@ -177,7 +177,7 @@ class Hmr2BodyBackend(BodyBackend):
 
         torch = self._torch
         try:
-            from hmr2.datasets.vitdet_dataset import (  # type: ignore[import-not-found]
+            from hmr2.datasets.vitdet_dataset import (
                 ViTDetDataset,
             )
         except ImportError:

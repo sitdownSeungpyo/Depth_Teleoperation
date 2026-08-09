@@ -88,14 +88,14 @@ class HamerHandBackend(HandBackend):
 
     def start(self) -> None:
         try:
-            import torch  # type: ignore[import-not-found]
+            import torch
         except ImportError as exc:
             raise HamerUnavailableError(
                 "PyTorch not installed. Run scripts\\install_hamer.ps1 first."
             ) from exc
 
         try:
-            from hamer.models import (  # type: ignore[import-not-found]
+            from hamer.models import (
                 DEFAULT_CHECKPOINT,
                 load_hamer,
             )
@@ -234,7 +234,7 @@ class HamerHandBackend(HandBackend):
         for img in crops:
             # Resize via OpenCV if available; fall back to numpy stride trick.
             try:
-                import cv2  # type: ignore[import-not-found]
+                import cv2
 
                 resized = cv2.resize(img, (target, target), interpolation=cv2.INTER_LINEAR)
             except ImportError:
@@ -246,11 +246,12 @@ class HamerHandBackend(HandBackend):
             "img": torch.stack(tensors).to(self._device),
             "right": torch.tensor(right_flag, dtype=torch.bool, device=self._device),
         }
-        return self._model(batch)
+        out: dict[str, Any] = self._model(batch)
+        return out
 
     @staticmethod
     def _naive_resize(img: NDArray[np.uint8], target: int) -> NDArray[np.uint8]:
         h, w = img.shape[:2]
         ys = (np.arange(target) * h / target).astype(int)
         xs = (np.arange(target) * w / target).astype(int)
-        return img[ys[:, None], xs[None, :]]
+        return np.asarray(img[ys[:, None], xs[None, :]], dtype=np.uint8)

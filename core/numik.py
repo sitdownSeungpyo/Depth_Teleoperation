@@ -61,18 +61,22 @@ class ArmPositionIK:
         self.model = model
         jids = [mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, n) for n in joint_names]
         if any(j < 0 for j in jids):
-            missing = [n for n, j in zip(joint_names, jids) if j < 0]
+            missing = [n for n, j in zip(joint_names, jids, strict=True) if j < 0]
             raise ValueError(f"joints not found in model: {missing}")
         self.joint_names = list(joint_names)
         self.qadr = np.array([model.jnt_qposadr[j] for j in jids], dtype=int)
         self.dof = np.array([model.jnt_dofadr[j] for j in jids], dtype=int)
-        lo, hi = [], []
+        lo: list[float] = []
+        hi: list[float] = []
         for j in jids:
             if bool(model.jnt_limited[j]):
-                lo.append(float(model.jnt_range[j, 0])); hi.append(float(model.jnt_range[j, 1]))
+                lo.append(float(model.jnt_range[j, 0]))
+                hi.append(float(model.jnt_range[j, 1]))
             else:
-                lo.append(-np.inf); hi.append(np.inf)
-        self.lo = np.array(lo); self.hi = np.array(hi)
+                lo.append(-np.inf)
+                hi.append(np.inf)
+        self.lo = np.array(lo)
+        self.hi = np.array(hi)
         # Dedicated joint-limit config (robot.joint_limits) overrides the model's
         # jnt_range so limits track the real robot independent of placeholder
         # model dims. Matched by full ("r_elbow_joint") or canonical ("r_elbow").
@@ -81,7 +85,8 @@ class ArmPositionIK:
                 canon = n[:-6] if n.endswith("_joint") else n
                 lim = joint_limits.get(n, joint_limits.get(canon))
                 if lim is not None:
-                    self.lo[i] = float(lim[0]); self.hi[i] = float(lim[1])
+                    self.lo[i] = float(lim[0])
+                    self.hi[i] = float(lim[1])
         self.sb = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, shoulder_body)
         self.eb = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, elbow_body)
         self.wb = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, wrist_body)
@@ -133,4 +138,7 @@ class ArmPositionIK:
         # [lo, hi] even if the loop converged before an update this call.
         data.qpos[self.qadr] = np.clip(data.qpos[self.qadr], self.lo, self.hi)
         mj.mj_forward(self.model, data)
-        return {n: float(data.qpos[a]) for n, a in zip(self.joint_names, self.qadr)}
+        return {
+            n: float(data.qpos[a])
+            for n, a in zip(self.joint_names, self.qadr, strict=True)
+        }
