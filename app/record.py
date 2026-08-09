@@ -18,8 +18,6 @@ import time
 from pathlib import Path
 from typing import Any
 
-import yaml
-
 from core.types import SkeletonFrame
 
 log = logging.getLogger(__name__)

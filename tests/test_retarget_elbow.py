@@ -11,7 +11,6 @@ from core.aligner import align_to_torso
 from core.retarget import Calibration, RobotGeometry, retarget_arm
 from core.types import SkeletonFrame
 
-
 SHOULDER = 0.18
 UPPER = 0.28
 LOWER = 0.27

@@ -1,0 +1,40 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  check:
+    # Windows is the project's only supported platform (PowerShell scripts,
+    # pynput hotkeys, winmm timer resolution), so it's what CI must prove.
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'   # pinned by requires-python (>=3.11,<3.12)
+          cache: pip
+
+      - name: Install check dependencies
+        # Deliberately NOT `pip install -e .`: the camera/GPU stack (pyrealsense2,
+        # mediapipe, rtmlib, torch) is imported lazily and needs hardware CI does
+        # not have. Tests gate those with pytest.importorskip and mypy covers them
+        # via ignore_missing_imports, so a lean install checks everything that can
+        # be checked headlessly — and stays fast.
+        run: |
+          python -m pip install --upgrade pip
+          pip install numpy pyyaml mujoco pytest ruff mypy
+
+      - name: Lint (ruff)
+        run: ruff check .
+
+      - name: Type check (mypy, strict on core/tracker/publisher)
+        run: mypy
+
+      - name: Tests
+        run: pytest -q

@@ -34,7 +34,6 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
-import yaml
 
 from core.aligner import AlignmentError, align_to_torso, resolve_gravity_up
 from core.filter import KeypointSmoother, OneEuroParams
@@ -149,7 +148,10 @@ def main() -> int:
 
             L = calibration.operator_arm_length
 
-            def _geom(af: Any) -> tuple[float, float, float]:
+            # L bound as a default arg: the closure is redefined every loop
+            # iteration, so capturing the loop variable by reference would make
+            # it read whatever L holds at *call* time (ruff B023).
+            def _geom(af: Any, L: float = L) -> tuple[float, float, float]:
                 """주어진 aligned frame 에서 (c, flexKP[rad], th5[rad]) 반환. 실패 시 nan."""
                 s = af.keypoints.get(f"{side}_shoulder")
                 e = af.keypoints.get(f"{side}_elbow")
@@ -185,7 +187,9 @@ def main() -> int:
                 elb_out = angles.get(f"{prefix}_elbow", float("nan"))
                 sp_out = angles.get(f"{prefix}_shoulder_pitch", float("nan"))
             except SingularConfigurationError:
-                status = "SING"; elb_out = float("nan"); sp_out = float("nan")
+                status = "SING"
+                elb_out = float("nan")
+                sp_out = float("nan")
 
             if now - last_log >= 0.1:
                 last_log = now

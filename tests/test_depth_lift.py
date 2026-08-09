@@ -51,8 +51,10 @@ def test_lifter_hole_fill_then_drop() -> None:
 
 def test_lifter_rejects_single_frame_spike() -> None:
     lift = RobustDepthLifter(SCALE, MAXM, max_jump_m=0.25)
-    lift.begin_frame(); assert lift.lift("w", _uniform(1000), 24, 24) == 1.0
-    lift.begin_frame(); assert lift.lift("w", _uniform(1000), 24, 24) == 1.0
+    lift.begin_frame()
+    assert lift.lift("w", _uniform(1000), 24, 24) == 1.0
+    lift.begin_frame()
+    assert lift.lift("w", _uniform(1000), 24, 24) == 1.0
     lift.begin_frame()
     # 1.0 -> 2.5 m is a 1.5 m jump; lone spike must be rejected (hold prev).
     assert lift.lift("w", _uniform(2500), 24, 24) == 1.0
@@ -62,7 +64,8 @@ def test_lifter_rejects_single_frame_spike() -> None:
 
 def test_lifter_commits_sustained_jump() -> None:
     lift = RobustDepthLifter(SCALE, MAXM, max_jump_m=0.25)
-    lift.begin_frame(); assert lift.lift("w", _uniform(1000), 24, 24) == 1.0
+    lift.begin_frame()
+    assert lift.lift("w", _uniform(1000), 24, 24) == 1.0
     lift.begin_frame()
     assert lift.lift("w", _uniform(1500), 24, 24) == 1.0   # jump -> pending, hold
     lift.begin_frame()

@@ -92,7 +92,7 @@ def main() -> int:
             m = accel.as_motion_frame().get_motion_data()
             a_sensor = np.array([m.x, m.y, m.z], dtype=np.float64)
             a_optical = R @ a_sensor
-            up = est.update(a_optical)
+            est.update(a_optical)  # result read below via est.up
             if now - last_print >= 0.5:
                 last_print = now
                 acc, rej = est.stats

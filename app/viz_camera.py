@@ -32,7 +32,6 @@ from typing import Any
 
 import cv2
 import numpy as np
-import yaml
 
 KEYPOINT_DRAW_ORDER = (
     "head",
@@ -328,7 +327,10 @@ def main() -> int:
                 y += 18
 
             # Arm vector norms (for SingularConfigurationError diagnosis).
-            def _norm(a: str, b: str) -> float | None:
+            # keypoint_status bound as a default arg — the closure is redefined
+            # each loop iteration, so a free reference would resolve at call time
+            # against whatever the loop variable then holds (ruff B023).
+            def _norm(a: str, b: str, keypoint_status: Any = keypoint_status) -> float | None:
                 ia = keypoint_status.get(a)
                 ib = keypoint_status.get(b)
                 if ia is None or ib is None:

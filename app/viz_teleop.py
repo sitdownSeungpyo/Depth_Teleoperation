@@ -33,7 +33,6 @@ from typing import Any
 
 import cv2
 import numpy as np
-import yaml
 
 from core.aligner import AlignmentError, align_to_torso, resolve_gravity_up
 from core.filter import KeypointSmoother, OneEuroParams

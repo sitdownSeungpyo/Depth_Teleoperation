@@ -16,6 +16,9 @@ dependencies = [
   "pyyaml>=6.0",
   "pynput>=1.7",
   "pybullet>=3.2.6",        # sim publisher + URDF visualization
+  # Required, not optional: core.numik / core.robot_model (the DEFAULT numeric
+  # IK path), publisher.mujoco_publisher and app.sim_teleop all import it.
+  "mujoco>=3.1",
   "dynamixel-sdk>=3.7",     # UART/RS485 direct servo control (UBP)
 ]
 
@@ -52,13 +55,29 @@ target-version = "py311"
 select = ["E", "F", "W", "I", "B", "UP", "PTH"]
 ignore = ["E501"]
 
+[tool.ruff.lint.per-file-ignores]
+# Tests gate optional heavy deps with pytest.importorskip(), which must run
+# before the imports it guards — E402 is the intended shape here.
+"tests/*" = ["E402"]
+
 [tool.mypy]
 python_version = "3.11"
 strict = true
-files = ["core"]
+# core is the kinematics/safety heart and stays strict-clean; tracker and
+# publisher are checked too so the depth/IK/IO seams keep their contracts.
+# app/ is excluded — the debug and viz entrypoints are throwaway scripts.
+files = ["core", "tracker", "publisher"]
 
+# Third-party modules with no stubs / no py.typed, plus the optional GPU backends
+# that may not be installed at all. Declared here in one place rather than as
+# inline `# type: ignore` at each import — inline ignores duplicated this and then
+# went stale (mypy flagged them as unused once the overrides existed).
 [[tool.mypy.overrides]]
-module = ["pyrealsense2.*", "mediapipe.*", "cv2.*", "pynput.*", "scipy.*", "yaml.*", "pybullet.*", "dynamixel_sdk.*"]
+module = [
+  "pyrealsense2.*", "mediapipe.*", "cv2.*", "pynput.*", "scipy.*", "yaml.*",
+  "pybullet.*", "pybullet_data.*", "dynamixel_sdk.*", "mujoco.*",
+  "rtmlib.*", "onnxruntime.*", "torch.*", "hamer.*", "hmr2.*",
+]
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]

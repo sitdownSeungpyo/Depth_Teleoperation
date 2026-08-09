@@ -62,7 +62,7 @@ def test_udp_publisher_skeleton_sends_packet() -> None:
         try:
             data, _ = sock.recvfrom(4096)
             received.append(data)
-        except socket.timeout:
+        except TimeoutError:
             pass
 
     thread = threading.Thread(target=receiver, daemon=True)

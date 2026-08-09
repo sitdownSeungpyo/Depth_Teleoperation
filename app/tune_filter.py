@@ -23,13 +23,12 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
-import yaml
 
 from core.aligner import AlignmentError, align_to_torso
 from core.filter import (
     FilterAndLimiter,
-    JointLimits,
     JointLimiterConfig,
+    JointLimits,
     OneEuroParams,
 )
 from core.retarget import (

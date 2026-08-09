@@ -54,7 +54,7 @@ def main() -> int:
     qpos_addr = model.jnt_qposadr[jid]
     print(f"testing {args.joint} → actuator idx {act_id}, joint qpos addr {qpos_addr}")
     print(f"target range [{args.target_min}, {args.target_max}], freq {args.frequency} Hz")
-    print(f"actuator kp/forcerange will appear below if non-default")
+    print("actuator kp/forcerange will appear below if non-default")
     # Print actuator's gain config
     ctrlrange = model.actuator_ctrlrange[act_id]
     forcerange = model.actuator_forcerange[act_id]

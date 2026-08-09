@@ -58,7 +58,7 @@ def main() -> int:
         )
         return 2
 
-    print(f"== MediaPipe Pose smoke test ==")
+    print("== MediaPipe Pose smoke test ==")
     print(f"  model: {args.model} ({args.model.stat().st_size / 1e6:.1f} MB)")
 
     t0 = time.perf_counter()
