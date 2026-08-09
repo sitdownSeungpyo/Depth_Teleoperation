@@ -38,7 +38,8 @@ def _cfg() -> dict:
 
 
 def _rot(v, axis, ang):
-    axis = np.asarray(axis, float); axis = axis / np.linalg.norm(axis)
+    axis = np.asarray(axis, float)
+    axis = axis / np.linalg.norm(axis)
     c, s = math.cos(ang), math.sin(ang)
     return v * c + np.cross(axis, v) * s + axis * np.dot(axis, v) * (1 - c)
 
@@ -77,10 +78,79 @@ def test_ik_matches_upper_and_forearm_directions(side: str, bend: float) -> None
     assert worst_f < 3.0, f"{side} bend={bend}: forearm dir err {worst_f:.2f} deg"
 
 
+def _straight_and_bent_targets():
+    """Operator shoulder/elbow/wrist for a straight arm and a 1.2 rad bent one."""
+    u = np.array([math.sin(1.0), -math.cos(1.0), 0.0])
+    perp = np.cross(u, [0, -1.0, 0])
+    sh = np.zeros(3)
+    el = sh + UPPER_OP * u
+    return (sh, el, el + LOWER_OP * u), (sh, el, el + LOWER_OP * _rot(u, perp, 1.2))
+
+
+def test_elbow_seeded_out_of_the_straight_arm_singularity() -> None:
+    """From a straight-arm start, shoulder yaw can't move the wrist, so DLS
+    stalls unless the elbow is nudged off the singular set first."""
+    rm = RobotModel(_cfg())
+    _, bent = _straight_and_bent_targets()
+    rm.data.qpos[:] = 0  # exactly on the singularity
+    sol = rm.solve_arm("right", *bent)
+    assert sol is not None
+    assert sol["r_elbow_joint"] > 0.5, "solver never left the straight-arm pose"
+
+
+def test_elbow_seeding_does_not_overwrite_a_bent_warm_start() -> None:
+    """The seed used to be applied unconditionally, every frame — which silently
+    replaced the caller's smoothed elbow angle (written back to qpos between
+    frames) with the raw measurement, so the elbow alone tracked unfiltered while
+    its three sibling joints were filtered.
+
+    max_iters=0 isolates the seeding decision: solve_arm then returns exactly
+    what qpos holds after seeding, with no solver motion mixed in.
+    """
+    cfg = _cfg()
+    cfg["ik"] = {**cfg["ik"], "max_iters": 0}
+    rm = RobotModel(cfg)
+    _, bent = _straight_and_bent_targets()
+    raw_flex = 1.2  # how _straight_and_bent_targets() bends the forearm
+    eadr = int(rm.arms["right"].ik.qadr[-1])
+
+    # Already bent (outside the singular neighbourhood): a caller-supplied,
+    # smoothed value must survive untouched.
+    warm = 0.55
+    rm.data.qpos[:] = 0
+    rm.data.qpos[eadr] = warm
+    sol = rm.solve_arm("right", *bent)
+    assert sol is not None
+    assert sol["r_elbow_joint"] == pytest.approx(warm)
+    assert abs(sol["r_elbow_joint"] - raw_flex) > 0.5   # NOT the raw measurement
+
+    # Straight (inside the neighbourhood): seeding still applies.
+    rm.data.qpos[:] = 0
+    sol = rm.solve_arm("right", *bent)
+    assert sol is not None
+    assert sol["r_elbow_joint"] == pytest.approx(raw_flex, abs=1e-6)
+
+
+def test_elbow_seed_threshold_is_configurable_and_disablable() -> None:
+    cfg = _cfg()
+    cfg["ik"] = {**cfg["ik"], "elbow_seed_below_rad": 0.0}   # seeding off
+    rm = RobotModel(cfg)
+    assert rm._elbow_seed_below == 0.0  # noqa: SLF001
+    _, bent = _straight_and_bent_targets()
+    rm.data.qpos[:] = 0
+    # With seeding disabled the solver still runs; it just isn't helped off the
+    # singularity. Assert only that it stays well-defined.
+    sol = rm.solve_arm("right", *bent)
+    assert sol is not None
+    assert all(math.isfinite(v) for v in sol.values())
+
+
 def test_link_lengths_measured_from_model() -> None:
     rm = RobotModel(_cfg())
-    for side, (u, l) in rm.link_lengths().items():
-        assert 0.1 < u < 0.5 and 0.1 < l < 0.5, f"{side} lengths ({u},{l}) implausible"
+    for side, (upper, lower) in rm.link_lengths().items():
+        assert 0.1 < upper < 0.5 and 0.1 < lower < 0.5, (
+            f"{side} lengths ({upper},{lower}) implausible"
+        )
 
 
 def test_config_joint_limits_override_model_and_are_enforced() -> None:
@@ -94,8 +164,8 @@ def test_config_joint_limits_override_model_and_are_enforced() -> None:
     rm = RobotModel(cfg)
     ik = rm.arms["right"].ik
     # Limits actually loaded into the solver.
-    lo = dict(zip(ik.joint_names, ik.lo))
-    hi = dict(zip(ik.joint_names, ik.hi))
+    lo = dict(zip(ik.joint_names, ik.lo, strict=True))
+    hi = dict(zip(ik.joint_names, ik.hi, strict=True))
     assert (lo["r_shoulder_yaw_joint"], hi["r_shoulder_yaw_joint"]) == (-0.2, 0.2)
     assert (lo["r_elbow_joint"], hi["r_elbow_joint"]) == (0.0, 1.0)
     # Sweep poses; no solved angle may leave its configured band.
@@ -145,8 +215,8 @@ def test_config_in_repo_loads_joint_limits() -> None:
     cfg = load_config("config/ubp.yaml")
     rm = RobotModel(dict(cfg["robot"]))
     ik = rm.arms["right"].ik
-    hi = dict(zip(ik.joint_names, ik.hi))
-    lo = dict(zip(ik.joint_names, ik.lo))
+    hi = dict(zip(ik.joint_names, ik.hi, strict=True))
+    lo = dict(zip(ik.joint_names, ik.lo, strict=True))
     # shoulder_yaw tightened to ±1.57 in the shipped config (vs model ±3.14).
     assert hi["r_shoulder_yaw_joint"] == pytest.approx(1.57)
     assert lo["r_shoulder_yaw_joint"] == pytest.approx(-1.57)

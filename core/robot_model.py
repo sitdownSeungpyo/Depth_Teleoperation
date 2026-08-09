@@ -68,6 +68,8 @@ class RobotModel:
         # the DLS from the previous qpos, so this guards the INPUT, not the solver.)
         self._max_target_step = float(ik_cfg.get("max_target_step_m", 0.0))
         self._last_targets: dict[str, NDArray[np.float64]] = {}
+        # Elbow seeding threshold (rad). See :meth:`solve_arm`. 0 disables seeding.
+        self._elbow_seed_below = float(ik_cfg.get("elbow_seed_below_rad", 0.15))
         # Dedicated joint-limit block (rad), overrides the model's jnt_range in
         # the IK. Keyed by joint name (full or canonical); each arm's IK picks
         # the joints it actuates. Empty -> fall back to model limits.
@@ -129,14 +131,24 @@ class RobotModel:
         if du is None or df is None:
             return None
         # Seed the elbow joint with the directly-observable flex angle
-        # (arccos(u·f), 0=straight). This lifts the arm off the straight-arm
-        # singularity where shoulder-yaw can't move the wrist, so DLS converges
-        # instead of stalling in a local minimum. (Rotation preserves the angle,
-        # so computing it from the robot-frame dirs is fine.)
-        flex = float(np.arccos(np.clip(np.dot(du, df), -1.0, 1.0)))
+        # (arccos(u·f), 0=straight) ONLY while the robot elbow is still inside the
+        # straight-arm neighbourhood, where shoulder-yaw cannot move the wrist and
+        # DLS would stall in a local minimum. (Rotation preserves the angle, so
+        # computing it from robot-frame dirs is fine.)
+        #
+        # It used to be seeded unconditionally, every frame. That silently undid
+        # the warm start for this one joint and — worse — overwrote the smoothed
+        # elbow angle that the caller writes back to qpos, so the elbow alone
+        # tracked the raw, unfiltered measurement while its three siblings were
+        # filtered. Seeding only near the singularity keeps the escape behaviour
+        # without leaking raw measurements into the solved pose.
         eadr = int(arm.ik.qadr[-1])  # elbow joint listed last (base→tip)
         elo, ehi = float(arm.ik.lo[-1]), float(arm.ik.hi[-1])
-        self.data.qpos[eadr] = float(np.clip(flex, elo, ehi))
+        if self._elbow_seed_below > 0.0 and abs(
+            float(self.data.qpos[eadr])
+        ) < self._elbow_seed_below:
+            flex = float(np.arccos(np.clip(np.dot(du, df), -1.0, 1.0)))
+            self.data.qpos[eadr] = float(np.clip(flex, elo, ehi))
         shoulder = arm.ik.body_pos(self.data, "shoulder")
         elbow_target = self._limit_step(
             f"{side}_elbow", shoulder + arm.upper_len * du

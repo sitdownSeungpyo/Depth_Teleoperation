@@ -27,6 +27,13 @@ robot:
     # 빠른 진짜 동작은 몇 프레임에 걸쳐 따라옴(slew). 0 = 끔.
     # 너무 작으면 빠른 동작이 굼뜸 / 너무 크면 점프 통과. 0.06~0.12 권장.
     max_target_step_m: 0.08
+    # 팔꿈치 시드 임계값(rad). 직선팔에서는 shoulder_yaw 가 손목을 못 움직여
+    # DLS 가 국소최소에 갇히므로, 로봇 팔꿈치가 이 각도보다 곧게 펴져 있을 때만
+    # 관측된 굴곡각(arccos(u·f))으로 시드해 특이점을 탈출시킨다.
+    # ★ 매 프레임 무조건 시드하면 안 된다: 호출자가 되쓰는 필터된 팔꿈치 각을
+    #   덮어써서 팔꿈치만 필터 없이(raw 측정값으로) 움직이게 된다.
+    # 0 = 시드 끔(직선팔 부근 수렴이 느려질 수 있음).
+    elbow_seed_below_rad: 0.15
   arms:
     right:
       joints: [r_shoulder_pitch_joint, r_shoulder_roll_joint, r_shoulder_yaw_joint, r_elbow_joint]
