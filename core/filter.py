@@ -105,12 +105,12 @@ class KeypointSmoother:
             self._filters[name] = f
         return f
 
-    def smooth(self, frame: "SkeletonFrame") -> "SkeletonFrame":
+    def smooth(self, frame: SkeletonFrame) -> SkeletonFrame:
         import numpy as np
 
         from core.types import SkeletonFrame
 
-        out_kp: dict[str, "np.ndarray"] = {}
+        out_kp: dict[str, np.ndarray] = {}
         for name, pos in frame.keypoints.items():
             conf = frame.confidence.get(name, 0.0)
             if conf < 1e-6:
@@ -176,7 +176,17 @@ class FilterAndLimiter:
         if any(not math.isfinite(v) for v in raw_positions.values()):
             log.warning("non-finite joint value, holding last command")
             if self._last is not None:
-                return self._last
+                # Re-stamp rather than returning the stored command object: the
+                # publisher interpolates on command timestamps, so handing back a
+                # frozen one makes its span/age arithmetic wrong (and the object
+                # would then be aliased by every caller holding the result).
+                held = JointCommand(
+                    timestamp=timestamp,
+                    positions=dict(self._last.positions),
+                    source_frame_ts=source_frame_ts,
+                )
+                self._last = held
+                return held
             # No prior command yet — substitute zeros (clamp will pull into limits below).
             raw_positions = {j: 0.0 for j in raw_positions}
 
@@ -203,7 +213,13 @@ class FilterAndLimiter:
                     self.limiter.velocity_violation_factor
                 ):
                     log.warning("velocity violation on %s, holding that joint", joint)
-                    out_positions[joint] = prev_positions[joint]
+                    hold_value = prev_positions[joint]
+                    # Feed the HELD value through the filter instead of skipping
+                    # it. Skipping left the filter's internal x_prev at a value we
+                    # never emitted, so when the joint resumed it smoothed from a
+                    # stale baseline and pulled the output backwards.
+                    self._filter_for(joint).update(hold_value, timestamp)
+                    out_positions[joint] = hold_value
                     continue
 
             smoothed = self._filter_for(joint).update(target, timestamp)
@@ -220,6 +236,17 @@ class FilterAndLimiter:
                 smoothed = max(limits.soft_min, min(smoothed, limits.soft_max))
 
             out_positions[joint] = smoothed
+
+        # Hold joints the retargeter couldn't produce this frame (it omits a whole
+        # arm when its geometry is degenerate). Without this the command's joint
+        # set shrinks and grows: on the recovery frame `prev_positions` no longer
+        # contains the joint, so BOTH the ±π unwrap and the velocity clamp are
+        # skipped for it and the robot snaps. Holding keeps the set constant.
+        if prev_positions is not None:
+            for joint, value in prev_positions.items():
+                if joint not in out_positions:
+                    log.debug("joint %s missing this frame, holding", joint)
+                    out_positions[joint] = value
 
         cmd = JointCommand(
             timestamp=timestamp,
