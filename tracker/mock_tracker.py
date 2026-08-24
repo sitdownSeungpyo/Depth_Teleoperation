@@ -92,12 +92,18 @@ class MockTracker:
 
     def health(self) -> TrackerHealth:
         """Replay has no producer thread — frames only advance while the caller
-        consumes ``stream()``, so ``alive`` simply tracks start/stop."""
+        consumes ``stream()``, so ``alive`` simply tracks start/stop.
+
+        Replay has no separate camera stage either: every frame carries a pose, so
+        capture age and detection age are the same number here.
+        """
         with self._lock:
             wall = self._latest_wall
         age = math.inf if wall is None else max(time.perf_counter() - wall, 0.0)
         running = self._started and not self._stop.is_set()
-        return TrackerHealth(running=running, alive=running, frame_age_s=age)
+        return TrackerHealth(
+            running=running, alive=running, frame_age_s=age, detection_age_s=age
+        )
 
     def stream(self) -> Iterator[SkeletonFrame]:
         self._load()

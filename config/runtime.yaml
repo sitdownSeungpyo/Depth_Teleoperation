@@ -3,3 +3,24 @@ main:
   loop_rate_hz: 60
   latency_log_every: 30
   latency_p95_budget_s: 0.1
+  # 기본 IK: numeric(수치 task-space IK, core/robot_model.py) | analytic(Yi 2012).
+  # CLI --ik 로 덮어쓸 수 있음.
+  ik: numeric
+  # ---- 카메라 vs 추정 실패 구분 (둘은 대응이 반대라 임계값도 따로) ----
+  # 카메라가 이 시간 동안 프레임 자체를 안 주면 = 진짜 고장.
+  # liveness 갱신을 멈춰서 safety watchdog 이 E-stop 하도록 둔다.
+  #
+  # ★ 실제 임계값 = max(camera_stale_s, camera_stall_factor × 측정된 캡처 주기).
+  #   캡처와 추정이 같은 스레드라서 캡처 타임스탬프는 추정기 속도만큼만 갱신된다.
+  #   즉 고정값 하나로는 30 fps GPU 백엔드와 5 fps CPU 백엔드를 동시에 못 맞춘다.
+  #   (실측 2026-08-25: rtmpose+mediapipe hand 16 Hz / hand 끄면 22 Hz.
+  #    0.5 s 고정이면 첫 CUDA 추론 워밍업에서 오탐 → watchdog E-stop 래치했음)
+  camera_stale_s: 0.5
+  camera_stall_factor: 4.0
+  # 캡처 주기를 아직 측정 못 한 동안(모델 로드 + 첫 추론)은 stale 판정을 미룬다.
+  # 이 시간 안에 첫 프레임이 아예 없으면 카메라가 안 뜬 것으로 보고 중단.
+  camera_startup_grace_s: 10.0
+  # 카메라는 멀쩡한데 포즈가 이 시간 동안 안 나오면 = 조작자가 프레임 밖/추정 실패.
+  # watchdog 이 아니라 confidence 램프(safe pose)로 대응한다.
+  # 30 fps 카메라에서 프레임 간격은 33 ms 이므로 그보다 충분히 커야 한다.
+  detection_gap_s: 0.3

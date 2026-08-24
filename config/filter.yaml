@@ -18,4 +18,14 @@ filter:
     d_cutoff: 1.0
   joint_limits_factor: 0.9
   max_velocity_rad_s: 8.0   # 4.0 → 8.0 (빠른 motion 허용)
-  velocity_violation_factor: 50.0
+  # 이상치 거부 임계: |Δtarget| > max_velocity_rad_s × dt × 이 값 이면 그 관절만
+  # 직전값으로 hold 한다(속도 clamp 와 별개 — clamp 는 "천천히 따라감", hold 는 "무시").
+  #
+  # ★ 50.0 이었는데, 30 fps 기준 8.0 × (1/30) × 50 = 13.2 rad/frame(> 2π)이라
+  #   한 프레임에 2π 이상 튀어야 발동 = 사실상 꺼져 있었다. 그래서 오검출이 거부되지
+  #   않고 속도 clamp 에 걸려 "느리게 틀린 곳으로" 가는 동작이 됐다.
+  #   5.0 → 8.0 × (1/30) × 5 = 1.32 rad/frame (≈76°/frame). 정상 동작은 못 넘고
+  #   좌우 뒤바뀜 같은 오검출은 걸린다.
+  # 팔이 자주 hold 되면(로그 "velocity violation") 8~10 으로 올리고,
+  # 튐이 그대로 통과하면 3 으로 내린다.
+  velocity_violation_factor: 5.0

@@ -112,6 +112,20 @@ class RealSenseTracker:
         # *stale* frame from a fresh one. frame.timestamp alone can't: it never
         # changes once the capture thread stops producing.
         self._latest_wall: float | None = None
+        # Wall-clock stamp of the last COLOR+DEPTH pair pulled off the camera,
+        # whether or not a body was found in it. Tracked separately from
+        # ``_latest_wall`` because a detector miss (operator out of shot) must not
+        # look like a dead camera — conflating them made a person stepping aside
+        # trip the caller's stall watchdog.
+        self._latest_capture_wall: float | None = None
+        # Smoothed capture interval, so callers can size a stall threshold against
+        # the cadence this pipeline actually achieves rather than a fixed guess.
+        # The first few intervals are skipped: they include model load and the
+        # first CUDA inference, which are seconds long and would poison the EMA.
+        self._capture_period: float | None = None
+        self._capture_count = 0
+        self._CAPTURE_EMA_ALPHA = 0.2
+        self._CAPTURE_WARMUP_FRAMES = 5
         self._fatal_error: str | None = None
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
@@ -250,12 +264,20 @@ class RealSenseTracker:
         thread = self._thread
         with self._lock:
             wall = self._latest_wall
-        age = math.inf if wall is None else max(time.perf_counter() - wall, 0.0)
+            capture_wall = self._latest_capture_wall
+            period = self._capture_period
+        now = time.perf_counter()
+        detection_age = math.inf if wall is None else max(now - wall, 0.0)
+        capture_age = (
+            math.inf if capture_wall is None else max(now - capture_wall, 0.0)
+        )
         return TrackerHealth(
             running=thread is not None and not self._stop.is_set(),
             alive=thread is not None and thread.is_alive(),
-            frame_age_s=age,
+            frame_age_s=capture_age,
             error=self._fatal_error,
+            detection_age_s=detection_age,
+            capture_period_s=math.inf if period is None else period,
         )
 
     def latest_color(self) -> NDArray[np.uint8] | None:
@@ -342,6 +364,21 @@ class RealSenseTracker:
         depth_image: NDArray[np.uint16] = np.asanyarray(depth_frame.get_data())
         # Expose the live BGR frame for monitors even when detection later fails.
         self._latest_color = color_image
+        # The camera delivered a frame. Stamp that BEFORE running the detector, so
+        # camera liveness stays true regardless of whether a body is found in it.
+        now = time.perf_counter()
+        with self._lock:
+            previous = self._latest_capture_wall
+            self._latest_capture_wall = now
+            self._capture_count += 1
+            if previous is not None and self._capture_count > self._CAPTURE_WARMUP_FRAMES:
+                interval = now - previous
+                self._capture_period = (
+                    interval
+                    if self._capture_period is None
+                    else self._CAPTURE_EMA_ALPHA * interval
+                    + (1.0 - self._CAPTURE_EMA_ALPHA) * self._capture_period
+                )
 
         # 라이브 latency 측정에는 hw 클록 변환 대신 호스트 perf_counter 사용.
         # RealSense hw 클록과 perf_counter 사이 drift (1ms/sec 정도)로 인해
