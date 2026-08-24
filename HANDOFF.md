@@ -23,22 +23,20 @@ claude --resume          # 이 프로젝트의 이전 세션 선택 → 대화 �
 - **메모리 색인**: `…\memory\MEMORY.md` (세션 시작 시 자동 로드).
 - 앱 실행: `python -m app.sim_teleop --config .\config\ubp.yaml`
 
-## 0-1) ★ 지금 당장 필요한 git 상태 (2026-08-12)
+## 0-1) ★ 지금 당장 필요한 git 상태 (2026-08-25)
 ```
-origin/main                     c4af15b  [docs] translate README to English
-origin/hardening/2026-08-review a10bfd3  ← 이번 작업 10 커밋, 푸시 완료
-로컬 main                        faea97c  (원격보다 1 커밋 뒤 — pull 필요)
+origin/main                     6b002b6  ← 머지·푸시 완료
+origin/hardening/2026-08-review 6b002b6  (main 과 동일)
+로컬 main                        6b002b6  (upstream 설정됨)
 ```
-- 작업 브랜치는 `origin/main` 위로 rebase 되어 있어 **fast-forward 머지 가능**.
-- **머지가 아직 안 됐습니다.** 이어서 할 첫 작업은 보통 이것:
-  ```powershell
-  git checkout main
-  git pull --ff-only
-  git merge --ff-only hardening/2026-08-review
-  git push origin main
-  ```
-  또는 PR: https://github.com/sitdownSeungpyo/Depth_Teleoperation/pull/new/hardening/2026-08-review
-- 주의: README 는 원격에서 **영문**입니다(c4af15b). 한국어로 되돌리지 말 것.
+- **2026-08-25 머지 완료.** hardening/2026-08-review 가 fast-forward 로 main 에
+  들어갔고 둘 다 푸시됐다. 이제 main 에서 바로 작업해도 되고, 새 작업은
+  새 브랜치를 파면 된다. 지난 세션의 "머지 안 됨" 항목은 해소됐다.
+- 로컬 main 은 upstream 이 없어서 `git pull` 이 조용히 아무것도 안 했었다.
+  `git branch --set-upstream-to=origin/main main` 로 설정해 뒀다.
+- 되돌리려면(머지를 취소하고 싶을 때): `git reset --hard c4af15b` 후 강제 푸시.
+  c4af15b 가 머지 직전의 origin/main 이다.
+- 주의: README 는 **영문**이다. 한국어로 되돌리지 말 것.
   HANDOFF.md(이 파일)와 config 주석은 한국어 유지.
 - 원격에 `feature/c++` 브랜치가 따로 있음 — 이번 작업과 무관.
 
@@ -186,7 +184,7 @@ bc12052 [add]      confidence 기반 팔 hold + 실패한 팔 0 스냅 제거
 - README 를 현재 상태로 갱신(RTMPose 기본, 수치 IK, depth_lift, IMU, config 표).
 
 ## 3) 다음에 할 일 (우선순위)
-0. **[머지]** `hardening/2026-08-review` → `main`. 명령은 §0-1 참고. 아직 안 됐음.
+0. ~~[머지] hardening/2026-08-review → main~~ → **2026-08-25 완료** (§0-1).
 1. **[검증 — 사용자만 가능]** `python -m app.sim_teleop --config .\config\ubp.yaml`
    실행해 체감 확인. 카메라/GPU 가 없는 쪽에서는 못 하는 유일한 항목.
    특히 이번에 바뀐 두 가지: (a) 팔꿈치가 이제 필터를 타므로 **덜 떨리지만 살짝 느릴 수**
