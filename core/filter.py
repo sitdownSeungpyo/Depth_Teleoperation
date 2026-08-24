@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import logging
 import math
+import time
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
@@ -169,6 +170,29 @@ class FilterAndLimiter:
     def check_self_collision(self, _positions: dict[str, float]) -> bool:
         # Capsule check — to be implemented when robot geometry is wired up.
         return False
+
+    def reset_to(
+        self, positions: dict[str, float], timestamp: float | None = None
+    ) -> None:
+        """Re-baseline the limiter to a pose the robot is already holding.
+
+        Needed after an E-stop release or a long tracking gap: ``_last`` still
+        holds the pre-fault command, so without this the first new command is
+        unwrapped and velocity-clamped against a value the robot no longer sits
+        at — a jump or a long crawl depending on which way the operator moved
+        meanwhile. The OneEuro state is cleared for the same reason.
+
+        ``timestamp`` must share the caller's clock, since the next call derives
+        ``dt`` from it; it defaults to ``perf_counter``, which is what the app
+        loop uses.
+        """
+        for f in self._filters.values():
+            f.reset()
+        self._last = JointCommand(
+            timestamp=time.perf_counter() if timestamp is None else timestamp,
+            positions=dict(positions),
+            source_frame_ts=0.0,
+        )
 
     def __call__(
         self, raw_positions: dict[str, float], timestamp: float, source_frame_ts: float

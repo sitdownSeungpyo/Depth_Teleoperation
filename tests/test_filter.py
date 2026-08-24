@@ -134,3 +134,26 @@ def test_recovery_after_a_missing_joint_is_still_velocity_clamped() -> None:
     # value kept a previous position on record.
     cmd = fl({"r_shoulder_pitch": 1.0, "r_elbow": 0.5}, timestamp=2 / 30.0, source_frame_ts=2 / 30.0)
     assert cmd.positions["r_shoulder_pitch"] < 0.5
+
+
+def test_reset_to_rebaselines_the_limiter() -> None:
+    """After an E-stop release or a loss ramp, the robot sits where it was left,
+    not where the limiter last commanded. Without a re-baseline the next command
+    is unwrapped and velocity-clamped against a value that is no longer true."""
+    limiter = FilterAndLimiter(
+        one_euro=OneEuroParams(min_cutoff=1e6), limiter=_limiter_cfg()
+    )
+    t = 0.0
+    limiter({"r_elbow": 0.0}, timestamp=t, source_frame_ts=t)
+
+    limiter.reset_to({"r_elbow": 1.0}, timestamp=t)
+    assert limiter._last is not None  # noqa: SLF001
+    assert limiter._last.positions["r_elbow"] == pytest.approx(1.0)  # noqa: SLF001
+
+    # The next command is velocity-clamped from 1.0, not from the pre-reset 0.0.
+    # (0.2 is under the 5x violation threshold of 0.333, so it clamps rather than
+    # being rejected outright.)
+    t += 1 / 30.0
+    out = limiter({"r_elbow": 1.2}, timestamp=t, source_frame_ts=t)
+    assert out.positions["r_elbow"] > 1.0
+    assert out.positions["r_elbow"] <= 1.0 + 2.0 * (1 / 30.0) + 1e-6

@@ -2,7 +2,8 @@
 
 Wraps a Publisher with:
 - Dead-man switch (pynput global hotkey on Windows; commands flow only when held).
-- E-stop hotkey (zero output, disable command flow).
+- E-stop hotkey — freezes the publisher at the pose the robot already holds, and
+  latches until the reset key is pressed.
 - Watchdog (E-stop if the main loop stops feeding commands) — runs on its OWN
   thread, because the stall it must catch is precisely the case where the main
   loop is blocked and therefore cannot tick anything itself.
@@ -32,13 +33,21 @@ class HotkeyBackend(Protocol):
 
 
 class PynputHotkey:
-    """Global hotkey state via pynput. Listener runs on a background thread."""
+    """Global hotkey state via pynput. Listener runs on a background thread.
 
-    def __init__(self, keys: list[str]) -> None:
+    ``strict`` makes a missing pynput a hard failure instead of a warning. Use it
+    whenever the dead-man is required: a dead-man we cannot read is not a
+    degraded dead-man, it is no dead-man at all, and starting anyway would let a
+    real robot move with no way to stop it from the keyboard.
+    """
+
+    def __init__(self, keys: list[str], strict: bool = False) -> None:
         self._wanted = {k.lower() for k in keys}
         self._held: set[str] = set()
         self._lock = threading.Lock()
         self._listener: Any = None
+        self._strict = strict
+        self.available = False
 
     def _normalise(self, key: Any) -> str | None:
         try:
@@ -70,23 +79,40 @@ class PynputHotkey:
     def start(self) -> None:
         try:
             from pynput.keyboard import Listener
-        except ImportError:
+        except ImportError as exc:
+            if self._strict:
+                raise RuntimeError(
+                    "pynput is unavailable, so the dead-man and E-stop keys cannot be "
+                    "read; refusing to start. Install it with `pip install pynput`."
+                ) from exc
             log.warning("pynput unavailable; hotkey disabled (commands will not flow)")
             return
         self._listener = Listener(on_press=self._on_press, on_release=self._on_release)
         self._listener.daemon = True
         self._listener.start()
+        self.available = True
 
     def stop(self) -> None:
         if self._listener is not None:
             self._listener.stop()
             self._listener = None
+        self.available = False
 
 
 @dataclass
 class SafetyConfig:
     deadman_key: str = "space"
     estop_key: str = "esc"
+    # Clears a latched E-stop. The latch is deliberate — whatever tripped it is
+    # usually still true one frame later — but without a reset key the only way
+    # out is killing the process, which leaves the robot powered and commanded by
+    # nobody. Reset additionally demands the dead-man be re-pressed.
+    reset_key: str = "r"
+    # When False the dead-man is not required for commands to flow. Kept separate
+    # from "are hotkeys wired up at all" so the E-stop key still works without it;
+    # the two used to be the same flag, which silently disabled E-stop whenever
+    # the dead-man was off.
+    require_deadman: bool = True
     confidence_threshold: float = 0.5
     loss_grace_period_s: float = 0.5
     ramp_to_safe_s: float = 1.5
@@ -114,7 +140,7 @@ class _LossState:
 
 
 class SafetyLayer:
-    """Wraps a Publisher; can override or zero commands at any time."""
+    """Wraps a Publisher; can freeze, override, or ramp commands at any time."""
 
     def __init__(
         self,
@@ -132,6 +158,15 @@ class SafetyLayer:
         self._last_update = clock()
         self._loss = _LossState()
         self._last_cmd: JointCommand | None = None
+        # After a reset the dead-man must be observed RELEASED once before it
+        # counts as held again, so a key held down through the fault cannot
+        # resume motion the instant the reset lands.
+        self._deadman_recycle = False
+        # Optional hook invoked with the held pose when a latched E-stop is
+        # cleared, so the caller can re-baseline its filter/limiter to where the
+        # robot actually is. Without it the first post-reset command is unwrapped
+        # and velocity-clamped against a stale pre-fault value.
+        self.on_estop_reset: Callable[[dict[str, float]], None] | None = None
         # The watchdog MUST NOT be driven from the caller's loop: the failure it
         # exists to catch (the loop blocked on a dead camera) is exactly the case
         # where the caller can't call anything. Own thread, real-time sleeps.
@@ -174,22 +209,62 @@ class SafetyLayer:
     def estopped(self) -> bool:
         return self._estopped
 
+    def last_command(self) -> JointCommand | None:
+        """The last command actually forwarded to the publisher."""
+        return self._last_cmd
+
     def trigger_estop(self, reason: str = "manual") -> None:
-        if not self._estopped:
-            log.warning("E-STOP triggered (%s)", reason)
+        """Latch the E-stop and freeze the publisher immediately.
+
+        The publisher action happens HERE, not in :meth:`update`. The watchdog's
+        whole reason to exist is a main loop that stopped calling ``update()``, so
+        an E-stop that only took effect inside ``update()`` would do nothing in
+        exactly the case it was built for.
+        """
+        if self._estopped:
+            return
         self._estopped = True
+        log.warning("E-STOP triggered (%s)", reason)
+        self._pub.emergency_stop()
 
     def reset_estop(self) -> None:
+        """Clear a latched E-stop and resume normal setpoint flow."""
+        if not self._estopped:
+            return
+        held = self._pub.current()
         self._estopped = False
+        self._pub.release_emergency_stop()
+        self._last_update = self._clock()
+        self._loss = _LossState()
+        self._deadman_recycle = self._cfg.require_deadman and self._hotkey is not None
+        if held is not None:
+            self._last_cmd = held
+            if self.on_estop_reset is not None:
+                self.on_estop_reset(dict(held.positions))
+        log.warning(
+            "E-stop reset; dead-man must be released and re-pressed before commands flow"
+        )
 
     def _deadman_held(self) -> bool:
+        if not self._cfg.require_deadman:
+            return True
         if self._hotkey is None:
             return True  # tests / headless mode default to allowing flow
-        return self._hotkey.is_pressed(self._cfg.deadman_key)
+        held = self._hotkey.is_pressed(self._cfg.deadman_key)
+        if self._deadman_recycle:
+            if not held:
+                self._deadman_recycle = False
+            return False
+        return held
 
-    def _check_estop_key(self) -> None:
-        if self._hotkey is not None and self._hotkey.is_pressed(self._cfg.estop_key):
+    def _check_hotkeys(self) -> None:
+        if self._hotkey is None:
+            return
+        if self._hotkey.is_pressed(self._cfg.estop_key):
             self.trigger_estop("estop hotkey")
+            return
+        if self._estopped and self._hotkey.is_pressed(self._cfg.reset_key):
+            self.reset_estop()
 
     def _maybe_ramp(
         self, command: JointCommand, mean_confidence: float, now: float
@@ -226,17 +301,14 @@ class SafetyLayer:
     def update(self, command: JointCommand, mean_confidence: float = 1.0) -> None:
         """Forward a (possibly safety-adjusted) command to the wrapped publisher."""
         now = self._clock()
-        self._check_estop_key()
+        self._check_hotkeys()
 
         if self._estopped:
-            zero = JointCommand(
-                timestamp=command.timestamp,
-                positions={j: 0.0 for j in command.positions},
-                source_frame_ts=command.source_frame_ts,
-            )
-            self._pub.set_target(zero)
+            # The publisher is already frozen at the pose the robot holds. Sending
+            # anything here would be a *motion* command, which is exactly what an
+            # E-stop must not produce. Just keep the loop's liveness stamp fresh
+            # so the watchdog doesn't re-trip on an already-stopped system.
             self._last_update = now
-            self._last_cmd = zero
             return
 
         if not self._deadman_held():
@@ -262,8 +334,9 @@ class SafetyLayer:
     def note_alive(self) -> None:
         """Mark the loop as alive without forwarding a command.
 
-        Use this during initialisation phases (e.g. operator-arm calibration) where
-        we are processing frames but cannot yet emit valid joint targets — without
-        this, the watchdog would fire because no ``update()`` has happened yet.
+        Use this during phases where we are processing frames but cannot yet emit
+        valid joint targets — operator-arm calibration, or a tick with no new pose
+        while the camera is still healthy. Without this, the watchdog would read
+        those as a stall even though nothing is wrong.
         """
         self._last_update = self._clock()

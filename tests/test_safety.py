@@ -67,7 +67,14 @@ def test_deadman_release_stops_commands() -> None:
         safety.stop()
 
 
-def test_estop_hotkey_zeroes_commands() -> None:
+def test_estop_hotkey_freezes_instead_of_commanding_zero() -> None:
+    """E-stop must not send zeros.
+
+    On a position-controlled robot zero is a *pose*, so a zero command is a
+    full-speed move to the robot's zero pose — and because the safety layer sits
+    downstream of the limiter, that move is not even velocity-clamped. The stop
+    has to be a freeze at the pose the robot already holds.
+    """
     pub = MockPublisher(rate_hz=200)
     hot = FakeHotkey()
     cfg = SafetyConfig(safe_pose=_safe_pose(), cycle_dt_s=1 / 30.0)
@@ -75,12 +82,22 @@ def test_estop_hotkey_zeroes_commands() -> None:
     safety.start()
     try:
         hot.press("space")
+        safety.update(_cmd({"r_elbow": 1.0}, ts=time.perf_counter()), mean_confidence=0.99)
+        time.sleep(0.05)  # let the publisher emit at least once
+
         hot.press("esc")
-        safety.update(_cmd({"r_elbow": 1.0}), mean_confidence=0.99)
-        forwarded: Any = pub._next  # noqa: SLF001
-        assert forwarded is not None
-        assert forwarded.positions["r_elbow"] == 0.0
+        safety.update(_cmd({"r_elbow": 1.5}, ts=time.perf_counter()), mean_confidence=0.99)
         assert safety.estopped
+        assert pub.frozen
+
+        held: Any = pub.held_command()
+        assert held is not None
+        assert held.positions["r_elbow"] == pytest.approx(1.0)
+
+        # Post-E-stop setpoints are dropped, not tracked.
+        safety.update(_cmd({"r_elbow": -2.0}, ts=time.perf_counter()), mean_confidence=0.99)
+        time.sleep(0.05)
+        assert pub.history[-1].positions["r_elbow"] == pytest.approx(1.0)
     finally:
         safety.stop()
 

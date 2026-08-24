@@ -32,6 +32,8 @@ class Publisher(Protocol):
     def stop(self) -> None: ...
     def set_target(self, command: JointCommand) -> None: ...
     def current(self) -> JointCommand | None: ...
+    def emergency_stop(self) -> None: ...
+    def release_emergency_stop(self) -> None: ...
 
 
 class InterpolatingPublisherBase:
@@ -52,6 +54,9 @@ class InterpolatingPublisherBase:
         self._stop = threading.Event()
         self._stale_warned = False
         self._thread: threading.Thread | None = None
+        # Emergency freeze state. See :meth:`emergency_stop`.
+        self._frozen = False
+        self._frozen_cmd: JointCommand | None = None
 
     def start(self) -> None:
         if self._thread is not None:
@@ -69,6 +74,8 @@ class InterpolatingPublisherBase:
 
     def set_target(self, command: JointCommand) -> None:
         with self._lock:
+            if self._frozen:
+                return  # emergency stop in force — every new setpoint is dropped
             self._prev = self._next if self._next is not None else command
             self._next = command
             self._stale_warned = False
@@ -81,11 +88,81 @@ class InterpolatingPublisherBase:
     def rate_hz(self) -> int:
         return self._rate_hz
 
+    # ---- emergency stop -------------------------------------------------
+    #
+    # An E-stop on a POSITION-controlled robot cannot mean "send zeros": zero is
+    # a *pose*, so commanding it is a full-speed move to the robot's zero pose —
+    # the opposite of stopping. It also bypasses the upstream velocity limiter,
+    # because the safety layer sits downstream of it. The only meaningful stop
+    # here is to keep repeating the pose the robot already holds and to drop
+    # every setpoint that arrives afterwards.
+
+    def emergency_stop(self) -> None:
+        """Freeze output at the last emitted command; ignore new targets.
+
+        Idempotent, and safe to call from the watchdog thread — which is the
+        point: the stall the watchdog catches is a main loop that stopped calling
+        anything, so the E-stop must not depend on that loop to take effect.
+        """
+        with self._lock:
+            if self._frozen:
+                return
+            held = self._latest_emit or self._next or self._prev
+            self._frozen = True
+            self._frozen_cmd = (
+                JointCommand(
+                    timestamp=held.timestamp,
+                    positions=dict(held.positions),
+                    source_frame_ts=held.source_frame_ts,
+                )
+                if held is not None
+                else None
+            )
+        log.warning("publisher frozen by emergency stop (holding last commanded pose)")
+
+    def release_emergency_stop(self) -> None:
+        """Resume normal setpoint flow after a latched E-stop is cleared."""
+        with self._lock:
+            if not self._frozen:
+                return
+            self._frozen = False
+            self._frozen_cmd = None
+            # Drop the pre-freeze interpolation state: its timestamps are now far
+            # in the past, so keeping it would make the first post-release
+            # setpoint interpolate over a bogus span.
+            self._prev = None
+            self._next = None
+            self._stale_warned = False
+        log.warning("publisher released from emergency stop")
+
+    @property
+    def frozen(self) -> bool:
+        with self._lock:
+            return self._frozen
+
+    def held_command(self) -> JointCommand | None:
+        """The pose being repeated while frozen, or None when not frozen."""
+        with self._lock:
+            return self._frozen_cmd
+
+    # ---------------------------------------------------------------------
+
     def _emit(self, command: JointCommand) -> None:
         raise NotImplementedError
 
     def _interpolate(self, now: float) -> JointCommand | None:
         with self._lock:
+            if self._frozen:
+                frozen = self._frozen_cmd
+                if frozen is None:
+                    return None
+                # Re-stamp so downstream age arithmetic keeps working; the
+                # positions themselves never move while frozen.
+                return JointCommand(
+                    timestamp=now,
+                    positions=dict(frozen.positions),
+                    source_frame_ts=frozen.source_frame_ts,
+                )
             prev = self._prev
             nxt = self._next
             stale_warned = self._stale_warned
@@ -112,7 +189,8 @@ class InterpolatingPublisherBase:
                 positions=dict(nxt.positions),
                 source_frame_ts=nxt.source_frame_ts,
             )
-        # Extrapolate slightly past nxt by the same dt cadence; clamp to [0, 1+small].
+        # Interpolate between the two most recent setpoints. u is clamped to
+        # [0, 1], so a late tick holds at nxt instead of extrapolating past it.
         u = (now - prev.timestamp) / span
         u = max(0.0, min(u, 1.0))
         positions = {

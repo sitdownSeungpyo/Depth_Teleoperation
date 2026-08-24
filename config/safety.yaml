@@ -4,6 +4,10 @@ safety:
     type: keyboard
     key: space
   estop_key: esc
+  # E-stop 은 래치된다(원인이 다음 프레임에도 대개 그대로이므로). 이 키로만 해제되고,
+  # 해제 후에는 deadman 을 "뗐다가 다시" 눌러야 명령이 흐른다(누른 채로 복귀 방지).
+  # estop_key 는 --deadman 여부와 무관하게 항상 동작한다.
+  reset_key: r
   confidence_threshold: 0.5
   loss_grace_period_s: 0.5
   ramp_to_safe_s: 1.5
