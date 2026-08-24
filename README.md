@@ -27,14 +27,24 @@ from the analytical IK in Yi et al. (Humanoids 2012); the default path is now
 
 - **Numerical task-space IK** (`core/numik.py`, MuJoCo DLS) — drives elbow and
   wrist to targets simultaneously. Tracks bent arms to <3° (analytic: 25–48°),
-  needs no arm-length calibration, and takes a URDF drop-in.
+  needs no arm-length calibration, and takes a URDF drop-in. Measured across nine
+  90-frame motions on `upperbody_sim.xml`: median direction error 0.08–0.24°.
+- **Singularity escape + non-convergence gate** — warm-starting has a fixed-point
+  failure mode where no joint motion reduces the error and the arm never moves
+  again; a stalled solve is nudged off the singular manifold, and a solve that
+  still did not converge is *rejected* so the arm holds rather than committing a
+  pose the operator never asked for.
 - **Analytic IK (Yi 2012)** remains as the `--ik analytic` fallback, with auto
   rest-pose calibration and hand-keypoint-based sh_yaw / w_yaw / w_pitch.
 - **Filter / Limiter** — One Euro + joint limits + velocity clamp. Joints that
   were not observed are held at their previous value, so the command's joint set
   does not change from frame to frame.
-- **Safety layer** — dead-man hotkey, E-stop, a **watchdog on its own thread**,
-  and tracking-loss ramp-to-safe-pose.
+- **Safety layer** — dead-man hotkey, a latching E-stop that **freezes the
+  publisher at the pose the robot already holds** (zero is a pose, so commanding
+  it would be a full-speed move, not a stop), a **watchdog on its own thread**,
+  and tracking-loss ramp-to-safe-pose. The E-stop key works with or without the
+  dead-man; a separate reset key clears the latch and demands the dead-man be
+  re-pressed.
 - **5 publishers** — PyBullet (URDF), MuJoCo (MJCF), Dynamixel (UART/RS485
   direct), UDP (skeleton), and a Mock JSONL logger.
 
@@ -77,13 +87,13 @@ imitation_upper/
 │   └── gravity.py           # accelerometer → up vector estimation
 ├── publisher/               # mock / udp / pybullet / mujoco / dynamixel
 ├── app/
-│   ├── sim_teleop.py        # ★ camera → numerical IK → MuJoCo (default run path)
-│   ├── main.py              # analytic IK + safety + publisher pipeline
+│   ├── main.py              # ★ numeric|analytic IK + safety + publisher (real-robot path)
+│   ├── sim_teleop.py        # camera → numerical IK → MuJoCo viewer (no safety/publisher)
 │   ├── debug_retarget.py / debug_elbow.py / debug_imu.py
 │   ├── viz_camera.py / viz_teleop.py / viz_mujoco.py / viz_urdf.py
 │   ├── tune_filter.py / record.py / replay.py / check_camera.py
 ├── scripts/                 # setup_env / run / install_{rtmpose,hamer,hmr2}
-└── tests/                   # 133 unit + e2e mock tests (no camera needed)
+└── tests/                   # 162 unit + e2e mock tests (no camera needed)
 ```
 
 ## Setup (Windows / PowerShell)
@@ -108,7 +118,7 @@ imitation_upper/
 #   silently falls back to CPU (~775 ms/frame vs ~34 ms).
 
 # 4. Test
-pytest -q                                        # 133 passing (no camera needed)
+pytest -q                                        # 162 passing (no camera needed)
 ```
 
 ### (Optional) HMR2 (4D-Humans) body backend — robust to upper-body occlusion
@@ -224,15 +234,27 @@ python -m app.viz_camera --config .\config\ubp.yaml --backend rtmpose
 python -m app.debug_imu  --config .\config\ubp.yaml --duration 30   # verify IMU gravity
 ```
 
-### Analytic IK pipeline (with safety + publisher)
+### Full pipeline (IK + safety + publisher)
 
 ```powershell
+# numerical IK (default), safety layer and publisher wired in
 .\scripts\run.ps1 --config .\config\ubp.yaml --tracker realsense --publisher mujoco
+
+# analytic Yi-2012 IK instead
+.\scripts\run.ps1 --config .\config\ubp.yaml --tracker realsense --publisher mujoco --ik analytic
 ```
 
-Calibration instructions are printed to the console (drop both arms naturally,
-relax the shoulders, hold ~0.5 s). After calibration the operator's motion is
-mapped onto the sim robot.
+`app/main.py` runs either solver (`--ik`, default from `main.ik`). The numerical
+path needs no calibration and drives shoulder pitch/roll/yaw + elbow; wrist
+twist/pitch are pinned to 0 there because they come from the hand backend, which
+only the analytic retargeter consumes.
+
+With `--ik analytic`, calibration instructions are printed to the console (drop
+both arms naturally, relax the shoulders, hold ~0.5 s). After calibration the
+operator's motion is mapped onto the sim robot.
+
+`app/sim_teleop.py` remains the quick estimation-plus-robot-window view; it has
+no safety layer or publisher, so it is not a path to a real robot.
 
 ### Raw-angle debug (bypass filter / publisher)
 
@@ -304,7 +326,26 @@ RTMPose 2D → foreground depth + spike rejection → deproject (3D)
 
 6. **Safety** — deadman hotkey, confidence threshold + loss grace → safe_pose
    ramp, and a **watchdog on its own thread** that E-stops when the main loop
-   stops feeding commands. E-stop zeroes the output.
+   stops feeding commands.
+
+   **E-stop freezes; it does not zero.** On a position-controlled robot `0.0` is
+   a pose, so a zero command is a full-speed move to the robot's zero pose — and
+   the safety layer sits *downstream* of the velocity limiter, so that move
+   would not even be clamped. Instead the publisher repeats the pose it last
+   emitted and drops every setpoint that arrives afterwards; on Dynamixel torque
+   stays on, because for an upper body cutting torque is a collapse, not a stop.
+   The freeze is applied inside `trigger_estop()` rather than in `update()`, so
+   the watchdog can act on a main loop that has stopped calling anything.
+
+   The E-stop **latches** and is cleared only by `safety.reset_key` (default
+   `r`), which re-baselines the filter to the held pose and requires the dead-man
+   to be released and re-pressed before motion resumes.
+
+   The camera stalling and the operator leaving the shot are handled separately:
+   `main.camera_stale_s` (camera really stopped → withhold liveness, let the
+   watchdog E-stop) vs `main.detection_gap_s` (camera fine, no pose → drive the
+   confidence ramp). Conflating them used to make a person stepping aside latch
+   an E-stop.
 
 7. **Publisher** — mock / udp / pybullet / mujoco / dynamixel. A 100 Hz
    interpolating loop (operator 30 Hz < robot command 100 Hz).
@@ -325,11 +366,20 @@ own keys are applied last.
 | `robot.model_path` / `arms.*` | robot.yaml | numerical-IK robot model — the URDF drop-in point |
 | `robot.ik.max_target_step_m` | robot.yaml | per-frame endpoint travel cap (suppresses jumps) |
 | `robot.ik.elbow_seed_below_rad` | robot.yaml | seed the elbow only below this angle (0 = off) |
+| `robot.ik.max_residual_m` | robot.yaml | reject a solve that ended this far from its targets, so the arm holds instead of committing a wrong pose (0 = off) |
+| `robot.ik.escape_error_ratio` | robot.yaml | error level, as a fraction of arm length, above which a stalled solve is treated as stuck in a singularity rather than converged |
 | `robot.joint_limits` | joint_limit.yaml | ★ the only file to edit for a real robot |
 | `retarget.output_gain` | retarget.yaml | per-joint scaling. Revisit when changing backend |
 | `filter.one_euro.min_cutoff, beta` | filter.yaml | smaller = stronger smoothing (less responsive) |
+| `filter.velocity_violation_factor` | filter.yaml | outlier **rejection** threshold as a multiple of `max_velocity × dt` (default 5). Distinct from the per-step clamp: this holds the joint instead of slewing it |
 | `safety.deadman.key` | safety.yaml | default `space` |
+| `safety.reset_key` | safety.yaml | clears a latched E-stop (default `r`); dead-man must then be re-pressed |
 | `safety.watchdog_timeout_s` | safety.yaml | E-stop if no command arrives within this window (default 0.5 s) |
+| `main.ik` | runtime.yaml | `numeric` (default) / `analytic` — overridden by `--ik` |
+| `main.camera_stale_s` | runtime.yaml | camera silent this long → real fault, let the watchdog E-stop (default 0.5 s) |
+| `main.detection_gap_s` | runtime.yaml | camera fine but no pose this long → tracking loss, ramp to safe pose (default 0.3 s) |
+| `publisher.dynamixel.servos.*.offset_unit` / `.direction` | publisher.yaml | ★ per-servo mechanical zero and rotation sign — must be measured on the assembled robot |
+| `publisher.dynamixel.profile_velocity` / `_acceleration` | publisher.yaml | servo motion profile limits; `null` means the servo moves at its own maximum |
 
 ## Dependencies
 
@@ -342,7 +392,7 @@ own keys are applied last.
 ## Tests / CI
 
 ```powershell
-pytest -q          # 133 tests, no camera or GPU needed
+pytest -q          # 162 tests, no camera or GPU needed
 ruff check .       # lint (E,F,W,I,B,UP,PTH)
 mypy               # strict — core + tracker + publisher
 ```
@@ -364,17 +414,31 @@ all lazy and the heavy tests are gated with `pytest.importorskip`.
   tracking matters.
 - `publisher/udp_publisher.py` is a deliberate skeleton; the packet schema waits
   on the target robot platform.
+- **`shoulder_yaw` is the binding joint limit.** `config/joint_limit.yaml` caps it
+  at ±90° while `models/upperbody_sim.xml` allows ±180°. Measured over six motions
+  (540 frames), the solver sits within 2% of that limit on 363 frames at ±90°, 15
+  at ±135°, and 4 at ±180° — with identical direction accuracy in all three. The
+  cap is not costing accuracy, but it leaves the joint with no travel, so the real
+  robot's actual yaw range is worth confirming before trusting the current value.
+  (The arm has no null space to redistribute — 4 joints against 6 position
+  constraints — so no posture-bias term can move it off the limit; this was
+  measured, not assumed.)
 - If the operator's calibration pose (arms hanging naturally) differs greatly
   from the robot zero, the rest_offset absorbs it — but moving during
   calibration makes the baseline unstable.
 
 ## Future work
 
-- Integrate the numerical IK into `app/main.py` (the safety + publisher
-  pipeline). It currently lives only in `app/sim_teleop.py`, so the two must be
-  merged before running on real hardware.
 - Apply the real robot URDF (only `config/robot.yaml` + `config/joint_limit.yaml`
   need editing).
+- **Dynamixel bring-up, unverified on hardware**: `offset_unit` / `direction` are
+  still all defaults, and the `ADDR_PROFILE_VELOCITY` / `ADDR_PROFILE_ACCELERATION`
+  constants have not been checked against the e-Manuals — the profile writes are
+  off by default and fail loudly if enabled with a wrong address.
+- Read back servo present-position / hardware-error status, so an overloaded or
+  shut-down servo is visible to the loop instead of silently not moving.
+- Give the operator feedback when an arm is being held (IK rejected, low
+  confidence): today it is only visible in the log's `held R=/L=` counters.
 - If hand accuracy is insufficient, swap in GPU-based hand mesh reconstruction
   such as HaMeR / WiLoR.
 - Multi-camera (front + side) to resolve depth ambiguity.
