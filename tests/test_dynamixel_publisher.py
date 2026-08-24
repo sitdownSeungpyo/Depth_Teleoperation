@@ -51,6 +51,43 @@ def test_build_servos_from_config() -> None:
     assert out["r_wrist_pitch"] == ServoSpec(id=7, model="XL430")
 
 
+def test_build_servos_rejects_an_unknown_model() -> None:
+    """A typo'd or unsupported model used to be accepted and silently treated as
+    4096 units/rev, which scales every command for that joint."""
+    with pytest.raises(ValueError, match="unknown servo model"):
+        build_servos_from_config({"r_elbow": {"id": 1, "model": "MX-46"}})
+
+
+def test_build_servos_rejects_a_bad_direction() -> None:
+    with pytest.raises(ValueError, match="direction must be"):
+        build_servos_from_config({"r_elbow": {"id": 1, "model": "MX-28", "direction": 0}})
+
+
+def test_servo_direction_mirrors_the_command() -> None:
+    """Real arms are assembled mirrored; without a per-servo direction the left
+    side drives the wrong way."""
+    forward = ServoSpec(id=1, model="MX-28")
+    mirrored = ServoSpec(id=2, model="MX-28", direction=-1)
+    unit_fwd, _ = forward.to_unit(math.pi / 2)
+    unit_mir, _ = mirrored.to_unit(math.pi / 2)
+    assert unit_fwd == DXL_CENTER + 1024
+    assert unit_mir == DXL_CENTER - 1024
+
+
+def test_servo_offset_shifts_the_mechanical_zero() -> None:
+    spec = ServoSpec(id=3, model="XL430", offset_unit=150)
+    unit, clamped = spec.to_unit(0.0)
+    assert unit == DXL_CENTER + 150
+    assert not clamped
+
+
+def test_servo_to_unit_reports_clamping() -> None:
+    spec = ServoSpec(id=4, model="MX-64")
+    unit, clamped = spec.to_unit(4.0 * math.pi)
+    assert unit == DXL_RESOLUTION - 1
+    assert clamped, "an out-of-travel target must be reported, not silently clamped"
+
+
 def test_servo_spec_immutable_like() -> None:
     # ServoSpec is a dataclass — verifies field types.
     s = ServoSpec(id=5, model="MX-28")

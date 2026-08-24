@@ -14,20 +14,41 @@ publisher:
   dynamixel:
     port: COM5              # PYO님 환경에 맞게 변경
     baud: 1000000
-    # Servo ID + 모델 — 사용자 확정 후 ID 채우기 (14 DOF, no torso_yaw)
+    # ---- 이동 프로파일 제한 (실기 안전) ----
+    # null 이면 서보에 안 씀 = 서보가 goal 까지 **자기 최대 속도로** 간다.
+    # 실기 최초 브링업에서는 반드시 낮은 값부터 시작할 것.
+    # ★ 주의: publisher/dynamixel_publisher.py 의 ADDR_PROFILE_* 주소는 아직
+    #   데이터시트 대조를 안 했다. 값을 넣으면 시작 시 실제로 쓰기를 시도하고,
+    #   주소/값이 틀리면 그 자리에서 예외로 실패한다(조용히 넘어가지 않음).
+    #   해당 모델 e-Manual 의 control table 을 먼저 확인하세요.
+    profile_velocity: null        # 예: 100 (모델별 단위)
+    profile_acceleration: null    # 예: 20
+    # 종료 시 토크를 끌지 여부. 상체 팔에서 토크 off = 중력에 의한 낙하이므로 기본 false.
+    # 안전한 자세로 내린 뒤에만 true 로 쓸 것.
+    torque_off_on_stop: false
+    # Servo ID + 모델 (14 DOF, no torso_yaw)
+    #
+    # offset_unit / direction 은 **관절마다 실측해서 채워야 한다.**
+    #   direction: 서보 회전 방향이 관절 부호 규약과 반대면 -1
+    #   offset_unit: 서보 기계 영점과 로봇 관절 영점의 차 (unit, 4096 = 360°)
+    # 둘 다 기본값(0 / +1)은 "모든 서보가 2048 = 0 rad, 방향 동일"이라는 뜻인데,
+    # 조립된 실기에서 그게 맞는 경우는 거의 없다. 브링업 절차:
+    #   1) profile_velocity 를 낮게 설정하고 토크만 켠 상태에서 각 관절을 손으로 정렬
+    #   2) present position 을 읽어 그 값을 offset_unit 에 기록
+    #   3) 작은 각도를 명령해 부호가 맞는지 보고 틀리면 direction: -1
     servos:
-      r_shoulder_pitch: {id: 1,  model: MX-64}
-      l_shoulder_pitch: {id: 2,  model: MX-64}
-      r_shoulder_roll:  {id: 3,  model: MX-64}
-      l_shoulder_roll:  {id: 4,  model: MX-64}
-      r_shoulder_yaw:   {id: 5,  model: MX-28}   # upper arm twist
-      l_shoulder_yaw:   {id: 6,  model: MX-28}
-      r_elbow:          {id: 7,  model: MX-28}
-      l_elbow:          {id: 8,  model: MX-28}
-      r_wrist_yaw:      {id: 9,  model: MX-28}   # forearm twist
-      l_wrist_yaw:      {id: 10, model: MX-28}
-      r_wrist_pitch:    {id: 11, model: XL430}
-      l_wrist_pitch:    {id: 12, model: XL430}
+      r_shoulder_pitch: {id: 1,  model: MX-64, offset_unit: 0, direction: 1}
+      l_shoulder_pitch: {id: 2,  model: MX-64, offset_unit: 0, direction: 1}
+      r_shoulder_roll:  {id: 3,  model: MX-64, offset_unit: 0, direction: 1}
+      l_shoulder_roll:  {id: 4,  model: MX-64, offset_unit: 0, direction: 1}
+      r_shoulder_yaw:   {id: 5,  model: MX-28, offset_unit: 0, direction: 1}  # upper arm twist
+      l_shoulder_yaw:   {id: 6,  model: MX-28, offset_unit: 0, direction: 1}
+      r_elbow:          {id: 7,  model: MX-28, offset_unit: 0, direction: 1}
+      l_elbow:          {id: 8,  model: MX-28, offset_unit: 0, direction: 1}
+      r_wrist_yaw:      {id: 9,  model: MX-28, offset_unit: 0, direction: 1}  # forearm twist
+      l_wrist_yaw:      {id: 10, model: MX-28, offset_unit: 0, direction: 1}
+      r_wrist_pitch:    {id: 11, model: XL430, offset_unit: 0, direction: 1}
+      l_wrist_pitch:    {id: 12, model: XL430, offset_unit: 0, direction: 1}
       # neck_yaw + head_pitch 는 2XL430 1개 액추에이터 (축 2개, ID 2개)
-      neck_yaw:         {id: 13, model: 2XL430}
-      head_pitch:       {id: 14, model: 2XL430}
+      neck_yaw:         {id: 13, model: 2XL430, offset_unit: 0, direction: 1}
+      head_pitch:       {id: 14, model: 2XL430, offset_unit: 0, direction: 1}
