@@ -108,7 +108,10 @@ def test_elbow_seeding_does_not_overwrite_a_bent_warm_start() -> None:
     what qpos holds after seeding, with no solver motion mixed in.
     """
     cfg = _cfg()
-    cfg["ik"] = {**cfg["ik"], "max_iters": 0}
+    # max_iters=0 means no solver motion at all, so the residual is whatever the
+    # seed left — the non-convergence gate would reject every call and hide the
+    # seeding decision this test exists to check.
+    cfg["ik"] = {**cfg["ik"], "max_iters": 0, "max_residual_m": 0.0}
     rm = RobotModel(cfg)
     _, bent = _straight_and_bent_targets()
     raw_flex = 1.2  # how _straight_and_bent_targets() bends the forearm
@@ -161,6 +164,11 @@ def test_config_joint_limits_override_model_and_are_enforced() -> None:
         "r_shoulder_yaw": [-0.2, 0.2],   # much tighter than model ±3.14
         "r_elbow": [0.0, 1.0],           # tighter than model [0, 3.05]
     }
+    # The sweep below deliberately asks for poses these limits forbid (bend=2.0
+    # against an elbow capped at 1.0), so the non-convergence gate would reject
+    # them — correctly, but that is a different behaviour, tested elsewhere. Turn
+    # it off so every pose comes back and the clamp itself stays under test.
+    cfg["ik"] = {**cfg["ik"], "max_residual_m": 0.0}
     rm = RobotModel(cfg)
     ik = rm.arms["right"].ik
     # Limits actually loaded into the solver.

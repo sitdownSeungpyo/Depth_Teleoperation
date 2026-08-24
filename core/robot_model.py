@@ -70,6 +70,13 @@ class RobotModel:
         self._last_targets: dict[str, NDArray[np.float64]] = {}
         # Elbow seeding threshold (rad). See :meth:`solve_arm`. 0 disables seeding.
         self._elbow_seed_below = float(ik_cfg.get("elbow_seed_below_rad", 0.15))
+        # Reject a solve that ended this far (m) from its targets. A DLS run that
+        # does not converge still returns *a* pose — just not the requested one —
+        # and committing that is worse than holding the arm. Measured on
+        # upperbody_sim.xml across nine 90-frame motions: converged frames sit at a
+        # median residual of 0.001 m and never exceed 0.031, while frames that
+        # failed to converge start at 0.37 m. 0 disables.
+        self._max_residual = float(ik_cfg.get("max_residual_m", 0.05))
         # Dedicated joint-limit block (rad), overrides the model's jnt_range in
         # the IK. Keyed by joint name (full or canonical); each arm's IK picks
         # the joints it actuates. Empty -> fall back to model limits.
@@ -94,11 +101,15 @@ class RobotModel:
             sh = ik.body_pos(self.data, "shoulder")
             el = ik.body_pos(self.data, "elbow")
             wr = ik.body_pos(self.data, "wrist")
-            self.arms[side] = _Arm(
-                ik,
-                upper_len=float(np.linalg.norm(el - sh)),
-                lower_len=float(np.linalg.norm(wr - el)),
-            )
+            upper_len = float(np.linalg.norm(el - sh))
+            lower_len = float(np.linalg.norm(wr - el))
+            # Scale the solver's "this is stuck, not merely converged" threshold to
+            # the arm rather than hard-coding metres, so a different robot inherits
+            # a sensible value from its own geometry.
+            ik.escape_error_m = float(
+                ik_cfg.get("escape_error_ratio", 0.1)
+            ) * (upper_len + lower_len)
+            self.arms[side] = _Arm(ik, upper_len=upper_len, lower_len=lower_len)
 
     @property
     def joint_qpos(self) -> dict[str, float]:
@@ -123,7 +134,13 @@ class RobotModel:
         Targets are placed at the robot's OWN link lengths along the operator's
         upper-arm and forearm directions, so they're always reachable and the
         robot reproduces both directions (full arm configuration), not just the
-        hand. Returns {joint_name: angle} or None if a direction is degenerate.
+        hand.
+
+        Returns {joint_name: angle}, or None when the direction is degenerate or
+        the solve did not converge — the caller holds the arm in both cases. The
+        model's own qpos is still advanced on a rejected solve, so a solve that
+        needed a singularity escape converges on the next frame instead of being
+        retried from the same stuck configuration forever.
         """
         arm = self.arms[side]
         du = _unit(self.frame_R @ (op_elbow - op_shoulder))
@@ -156,7 +173,15 @@ class RobotModel:
         wrist_target = self._limit_step(
             f"{side}_wrist", elbow_target + arm.lower_len * df
         )
-        return arm.ik.solve(self.data, elbow_target, wrist_target)
+        solution = arm.ik.solve(self.data, elbow_target, wrist_target)
+        if 0.0 < self._max_residual < arm.ik.last_residual_m:
+            return None
+        return solution
+
+    def last_residual(self, side: str) -> float:
+        """Distance (m) left between the bodies and their targets after the last
+        :meth:`solve_arm` for ``side``."""
+        return self.arms[side].ik.last_residual_m
 
     def _limit_step(
         self, key: str, target: NDArray[np.float64]
